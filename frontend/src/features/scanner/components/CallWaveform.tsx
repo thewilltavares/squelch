@@ -89,17 +89,44 @@ export function CallWaveform({ callId, isCurrent, onSeek }: CallWaveformProps) {
   // movement. The native `change` event fires once, on release (or per
   // keyboard step) — wherever the pointer ends up — so seeking listens
   // for that directly.
+  //
+  // A press that leaves the value where it was fires no `change`: a click
+  // on the invisible thumb, or one that rounds to the current value. On a
+  // row that is not playing the value is 0, so a click at the very start
+  // did nothing. The `click` that follows seeks instead, unless the press
+  // moved the value or produced a `change`, whichever order the browser
+  // fires them in.
   const inputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     const el = inputRef.current;
     if (!el) return;
-    const commit = () => {
+    let pressedAt: string | null = null;
+    let committed = false;
+    const seek = () => {
       setDragging(null);
       const seconds = Number(el.value);
       if (Number.isFinite(seconds)) onSeek(seconds);
     };
+    const press = () => {
+      pressedAt = el.value;
+      committed = false;
+    };
+    const commit = () => {
+      committed = true;
+      seek();
+    };
+    const click = () => {
+      if (pressedAt !== null && !committed && el.value === pressedAt) seek();
+      pressedAt = null;
+    };
+    el.addEventListener("pointerdown", press);
     el.addEventListener("change", commit);
-    return () => el.removeEventListener("change", commit);
+    el.addEventListener("click", click);
+    return () => {
+      el.removeEventListener("pointerdown", press);
+      el.removeEventListener("change", commit);
+      el.removeEventListener("click", click);
+    };
   }, [onSeek]);
 
   const barClass = (at: number) => {
