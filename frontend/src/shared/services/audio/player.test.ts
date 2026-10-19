@@ -544,6 +544,44 @@ describe("audioPlayer", () => {
     expect(player.getCurrentCall()?.id).toBe(2);
   });
 
+  it("does not replay a live call that was heard on demand meanwhile", async () => {
+    // Regression: a call that queued live while another played, then was
+    // played from search, played a second time once the queue reached it.
+    const player = await loadPlayer();
+    const queueLengths: number[] = [];
+    player.setOnQueueChange((n) => queueLengths.push(n));
+    player.playNow(makeCall(1));
+    player.enqueue(makeCall(2));
+    player.enqueue(makeCall(3));
+    await Promise.resolve();
+
+    player.playNow(makeCall(2)); // chosen from search while it waits
+    await Promise.resolve();
+    expect(queueLengths[queueLengths.length - 1]).toBe(1);
+
+    lastElement().emit("ended"); // 2 ends; only 3 was never heard
+    await Promise.resolve();
+    expect(player.getCurrentCall()?.id).toBe(3);
+    lastElement().emit("ended");
+    await Promise.resolve();
+    expect(player.getCurrentCall()).toBeNull();
+  });
+
+  it("does not queue the live call it replaces when that is the one asked for", async () => {
+    // Playing the live call on now from its search row starts it over; it
+    // must not come back once more afterwards.
+    const player = await loadPlayer();
+    player.enqueue(makeCall(4));
+    await Promise.resolve();
+
+    player.playNow(makeCall(4));
+    await Promise.resolve();
+    lastElement().emit("ended");
+    await Promise.resolve();
+
+    expect(player.getCurrentCall()).toBeNull();
+  });
+
   it("hands the audio session to an on-demand call and back to the stream", async () => {
     // loadPlayer resets the module registry, so the stream player must be
     // imported after it or the spies land on a different instance than the

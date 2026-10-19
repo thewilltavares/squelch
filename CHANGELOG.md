@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A live call played from search does not play again.** A call that
+  arrived live while another played waited in the queue, and playing it
+  from search or bookmarks left that copy there, so the same call played a
+  second time when the queue reached it. Playing a call now takes it out of
+  the queue.
+
 ## [3.1.0] — 2026-09-29
 
 ### Added
