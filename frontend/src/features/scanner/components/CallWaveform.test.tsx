@@ -82,6 +82,38 @@ describe("CallWaveform", () => {
     expect(playedBars(container)).toBe(0);
   });
 
+  it("starts a call on a click that leaves the value unchanged", () => {
+    const onSeek = vi.fn();
+    render(<CallWaveform callId={1} isCurrent={false} onSeek={onSeek} />);
+    const slider = screen.getByRole("slider");
+
+    // A click on the thumb at 0:00: no `input`, no `change`, just a click.
+    fireEvent.pointerDown(slider);
+    fireEvent.click(slider);
+    expect(onSeek).toHaveBeenCalledTimes(1);
+    expect(onSeek).toHaveBeenCalledWith(0);
+  });
+
+  it("seeks once when a click also moved the value", () => {
+    const onSeek = vi.fn();
+    render(<CallWaveform callId={1} isCurrent={false} onSeek={onSeek} />);
+    const slider = screen.getByRole("slider");
+
+    fireEvent.pointerDown(slider);
+    fireEvent.input(slider, { target: { value: "7.5" } });
+    fireEvent.change(slider);
+    fireEvent.click(slider);
+    expect(onSeek).toHaveBeenCalledTimes(1);
+    expect(onSeek).toHaveBeenCalledWith(7.5);
+  });
+
+  it("does not seek on a click without a press, such as from the keyboard", () => {
+    const onSeek = vi.fn();
+    render(<CallWaveform callId={1} isCurrent={false} onSeek={onSeek} />);
+    fireEvent.click(screen.getByRole("slider"));
+    expect(onSeek).not.toHaveBeenCalled();
+  });
+
   it("shows the time under the pointer before a click", () => {
     const { container } = render(
       <CallWaveform callId={1} isCurrent={false} onSeek={vi.fn()} />,
