@@ -9,6 +9,7 @@ import {
   type CallSearchResponse,
   type CallSearchResult,
 } from "../callsSlice";
+import { setPaused } from "../scannerSlice";
 import type { Call } from "../types";
 
 /** Consecutive unplayable Calls before autoplay gives up (server down). */
@@ -112,6 +113,13 @@ export function useSearchAutoplay({
         startAt,
         onEnded: (failed) => continueFrom(result.id, failed),
       });
+      // Playing a Call is the opposite of paused. playNow plays regardless,
+      // so a pause left over from an earlier Call would otherwise stay on,
+      // and every row would offer Resume for audio that is playing.
+      if (store.getState().scanner.isPaused) {
+        dispatch(setPaused(false));
+        audioPlayer.resume();
+      }
       prepareEdge(result.id);
     }
 

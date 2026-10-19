@@ -4,7 +4,7 @@ import { renderHook, act, waitFor } from "@testing-library/react";
 import { configureStore } from "@reduxjs/toolkit";
 import { Provider } from "react-redux";
 import { api } from "@/app/api";
-import { scannerSlice } from "../scannerSlice";
+import { scannerSlice, setPaused } from "../scannerSlice";
 import { authSlice } from "@/features/auth";
 import {
   callsApi,
@@ -15,7 +15,7 @@ import {
 } from "../callsSlice";
 import { useSearchAutoplay } from "./useSearchAutoplay";
 
-const player = vi.hoisted(() => ({ playNow: vi.fn() }));
+const player = vi.hoisted(() => ({ playNow: vi.fn(), resume: vi.fn() }));
 vi.mock("@/shared/services/audio/player", () => ({ audioPlayer: player }));
 
 type OnEnded = (failed: boolean) => void;
@@ -375,6 +375,34 @@ describe("useSearchAutoplay", () => {
 
     expect(played()).toEqual([1, 2, 3]);
     expect(hook.current.enabled).toBe(false);
+  });
+
+  it("clears a pause left over from an earlier call", () => {
+    // Regression: pause one row, play another. The Call played but the
+    // pause stayed on, so every row autoplay reached offered Resume.
+    store.dispatch(setPaused(true));
+    const { result: hook } = setup(store, {
+      isOpen: true,
+      calls: page([1, 2], 2).calls,
+      queryParams: params("asc", 1),
+    });
+
+    act(() => hook.current.play(result(2)));
+
+    expect(store.getState().scanner.isPaused).toBe(false);
+    expect(player.resume).toHaveBeenCalled();
+  });
+
+  it("leaves the pause state alone when nothing was paused", () => {
+    const { result: hook } = setup(store, {
+      isOpen: true,
+      calls: page([1, 2], 2).calls,
+      queryParams: params("asc", 1),
+    });
+
+    act(() => hook.current.play(result(1)));
+
+    expect(player.resume).not.toHaveBeenCalled();
   });
 
   it("starts partway in when asked", () => {
