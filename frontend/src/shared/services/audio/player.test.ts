@@ -11,6 +11,8 @@ class FakeAudio {
   private srcValue = "";
   volume = 1;
   currentTime = 0;
+  /** NaN until metadata loads, as on a real element. */
+  duration = NaN;
   paused = true;
   readyState = 0;
   playCalls = 0;
@@ -568,5 +570,117 @@ describe("audioPlayer", () => {
 
     pause.mockRestore();
     resume.mockRestore();
+  });
+
+  it("lets an on-demand continuation play next instead of the queue", async () => {
+    // Search autoplay: the next result follows the one that ended, and a
+    // live call that arrived meanwhile keeps waiting rather than cutting in.
+    const player = await loadPlayer();
+    player.playNow(makeCall(1), {
+      onEnded: () => player.playNow(makeCall(3)),
+    });
+    player.enqueue(makeCall(2));
+    await Promise.resolve();
+
+    lastElement().emit("ended");
+    await Promise.resolve();
+
+    expect(player.getCurrentCall()?.id).toBe(3);
+    lastElement().emit("ended");
+    await Promise.resolve();
+    expect(player.getCurrentCall()?.id).toBe(2);
+  });
+
+  it("advances the queue when the continuation starts nothing", async () => {
+    const player = await loadPlayer();
+    const onEnded = vi.fn();
+    player.playNow(makeCall(1), { onEnded });
+    player.enqueue(makeCall(2));
+    await Promise.resolve();
+
+    lastElement().emit("ended");
+    await Promise.resolve();
+
+    expect(onEnded).toHaveBeenCalledWith(false);
+    expect(player.getCurrentCall()?.id).toBe(2);
+  });
+
+  it("tells the call-start listener whether each call is live", async () => {
+    // The search panel says so when a queued live call plays: it is in no
+    // row there, so otherwise it plays from nowhere.
+    const player = await loadPlayer();
+    const onStart = vi.fn();
+    player.setOnCallStart(onStart);
+    player.playNow(makeCall(1));
+    player.enqueue(makeCall(2));
+    await Promise.resolve();
+
+    lastElement().emit("ended");
+    await Promise.resolve();
+
+    expect(onStart.mock.calls.map(([call, live]) => [call.id, live])).toEqual([
+      [1, false],
+      [2, true],
+    ]);
+  });
+
+  it("tells the continuation when a call could not be played", async () => {
+    // Autoplay passes over one bad file, but stops when calls keep failing
+    // (the server is down); it can only tell the two apart if told.
+    const player = await loadPlayer();
+    FakeAudio.rejectFirstPlayWith = "NotSupportedError";
+    const onEnded = vi.fn();
+
+    player.playNow(makeCall(1), { onEnded });
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+
+    expect(onEnded).toHaveBeenCalledWith(true);
+  });
+
+  it("starts partway into a call once its metadata loads", async () => {
+    const player = await loadPlayer();
+    player.playNow(makeCall(1), { startAt: 4.5 });
+    await Promise.resolve();
+
+    const el = lastElement();
+    // A currentTime set before metadata is dropped when the source loads.
+    expect(el.currentTime).toBe(0);
+    el.emit("loadedmetadata");
+    expect(el.currentTime).toBe(4.5);
+  });
+
+  it("does not apply a start offset to a call that replaced it", async () => {
+    const player = await loadPlayer();
+    player.playNow(makeCall(1), { startAt: 4 });
+    player.playNow(makeCall(2));
+    await Promise.resolve();
+
+    lastElement().emit("loadedmetadata");
+    expect(lastElement().currentTime).toBe(0);
+  });
+
+  it("seeks within the current call, clamped to its length", async () => {
+    const player = await loadPlayer();
+    player.playNow(makeCall(1));
+    await Promise.resolve();
+    const el = lastElement();
+    el.duration = 10;
+
+    player.seek(25);
+    expect(el.currentTime).toBe(10);
+    player.seek(-3);
+    expect(el.currentTime).toBe(0);
+
+    // Seeking a paused call moves it without starting it.
+    player.pause();
+    player.seek(5);
+    expect(el.currentTime).toBe(5);
+    expect(el.paused).toBe(true);
+  });
+
+  it("ignores a seek with nothing playing", async () => {
+    const player = await loadPlayer();
+    expect(() => player.seek(3)).not.toThrow();
+    expect(player.getCurrentCall()).toBeNull();
   });
 });

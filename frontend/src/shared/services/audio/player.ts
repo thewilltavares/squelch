@@ -12,6 +12,21 @@ interface QueueItem {
    * actually about auth.
    */
   recoveryTried?: boolean;
+  /** Seconds into the call to start from, applied once metadata loads. */
+  startAt?: number;
+  /**
+   * Runs when this on-demand call finishes (`failed` false) or cannot be
+   * played (`failed` true), before the queue advances. Search autoplay
+   * uses it to start the next result; if it starts a call, the queue stays
+   * put, so live calls keep waiting.
+   */
+  onEnded?: (failed: boolean) => void;
+}
+
+/** Options for an on-demand play. */
+export interface PlayNowOptions {
+  startAt?: number;
+  onEnded?: (failed: boolean) => void;
 }
 
 /** HTMLMediaElement.readyState values used by the stall recovery. */
@@ -78,7 +93,7 @@ class AudioPlayer {
   private lastItem: QueueItem | null = null;
   private _paused = false;
   private _playing = false;
-  private callStartCb: ((call: Call) => void) | null = null;
+  private callStartCb: ((call: Call, live: boolean) => void) | null = null;
   private callEndCb: (() => void) | null = null;
   private queueChangeCb: ((length: number) => void) | null = null;
   private authRecovery: (() => Promise<boolean>) | null = null;
@@ -269,8 +284,11 @@ class AudioPlayer {
    *   of the queue so it resumes after this on-demand call finishes.
    * - If another on-demand call is playing, discard it (don't re-queue).
    * - Ingested calls in the queue are never touched.
+   *
+   * `startAt` starts the call partway in; `onEnded` runs when it finishes
+   * (see QueueItem).
    */
-  playNow(call: Call): void {
+  playNow(call: Call, opts: PlayNowOptions = {}): void {
     // While the server stream owns playback, hand the audio session over
     // for the duration of this one call rather than starting a second
     // element alongside it.
@@ -279,7 +297,12 @@ class AudioPlayer {
       streamPlayer.pause();
     }
 
-    const item: QueueItem = { call, onDemand: true };
+    const item: QueueItem = {
+      call,
+      onDemand: true,
+      startAt: opts.startAt,
+      onEnded: opts.onEnded,
+    };
     if (!this.currentItem) {
       this.startPlayback(item);
       return;
@@ -317,6 +340,21 @@ class AudioPlayer {
     // Nothing on the air: play the last Call again, the way an on-demand
     // play does, so a queued ingested Call is not thrown away for it.
     if (this.lastItem) this.playNow(this.lastItem.call);
+  }
+
+  /**
+   * Move the current call to `seconds`, clamped to its length. A paused
+   * call stays paused. Does nothing when no call is current.
+   */
+  seek(seconds: number): void {
+    if (!this.currentItem || !this.audio) return;
+    const length = this.audio.duration;
+    const upper = Number.isFinite(length) ? length : seconds;
+    try {
+      this.audio.currentTime = Math.max(0, Math.min(seconds, upper));
+    } catch {
+      // ignore — element may not be ready
+    }
   }
 
   /** True when there is something for [replay] to play. */
@@ -384,7 +422,8 @@ class AudioPlayer {
     return this.audio.currentTime || 0;
   }
 
-  setOnCallStart(cb: (call: Call) => void): void {
+  /** `live` is true for an ingested Call, false for one played on demand. */
+  setOnCallStart(cb: (call: Call, live: boolean) => void): void {
     this.callStartCb = cb;
   }
 
@@ -567,7 +606,7 @@ class AudioPlayer {
   private startPlayback(item: QueueItem): void {
     this.currentItem = item;
     this.lastItem = item;
-    this.callStartCb?.(item.call);
+    this.callStartCb?.(item.call, !item.onDemand);
     this.updateMediaSession(item.call);
     this.ensureContext();
     this.ensureAudioElement();
@@ -586,6 +625,22 @@ class AudioPlayer {
     // loading. Setting src already starts the fetch, so no load() call
     // (the extra load() also aborted the in-flight gesture unlock).
     audio.src = audioUrlFor(item.call);
+    const startAt = item.startAt ?? 0;
+    if (startAt > 0) {
+      // currentTime set before metadata arrives is lost on a new source, so
+      // wait for it. Only for this item: a newer call may own the element
+      // by the time it fires.
+      const applyStart = () => {
+        audio.removeEventListener("loadedmetadata", applyStart);
+        if (this.currentItem !== item) return;
+        try {
+          audio.currentTime = startAt;
+        } catch {
+          // ignore — element may not be ready
+        }
+      };
+      audio.addEventListener("loadedmetadata", applyStart);
+    }
     this._playing = true;
     void this.playElement(audio, item);
   }
@@ -665,10 +720,13 @@ class AudioPlayer {
   }
 
   private handleEnded = (): void => {
-    if (!this.currentItem) return;
+    const ended = this.currentItem;
+    if (!ended) return;
     this.currentItem = null;
     this._playing = false;
-    this.playNext();
+    // A continuation that starts another call keeps the queue where it is.
+    ended.onEnded?.(false);
+    if (!this.currentItem) this.playNext();
     if (!this.currentItem) {
       this.updateMediaSession(null);
       this.releaseStream();
@@ -721,7 +779,9 @@ class AudioPlayer {
     console.warn("[audioPlayer] failed to play call", item.call.id);
     this.currentItem = null;
     this._playing = false;
-    this.playNext();
+    // An unplayable call is passed over, not the end of a continuation.
+    item.onEnded?.(true);
+    if (!this.currentItem) this.playNext();
   }
 
   private playNext(): void {
