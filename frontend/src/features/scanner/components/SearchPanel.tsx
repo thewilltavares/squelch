@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { addListener } from "@reduxjs/toolkit";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   X,
@@ -9,15 +17,18 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ListFilter,
   RotateCcw,
   RefreshCw,
+  SkipBack,
+  SkipForward,
   SlidersHorizontal,
 } from "lucide-react";
 import { useAppSelector, useAppDispatch } from "@/app/store";
 import { ShareCallButton } from "../components/ShareCallButton";
 import { CallWaveform } from "./CallWaveform";
 import { useSearchAutoplay } from "../hooks/useSearchAutoplay";
-import { togglePause } from "../scannerSlice";
+import { callReceived, togglePause } from "../scannerSlice";
 import {
   useSearchCallsQuery,
   type CallSearchParams,
@@ -42,11 +53,25 @@ import { useGetBookmarkIDsQuery, useToggleBookmarkMutation } from "@/app/api";
 import { selectToken } from "@/features/auth";
 import { audioPlayer } from "@/shared/services/audio/player";
 import { sanitizeDownloadFilename } from "@/shared/services/download/filename";
+import { readStored, writeStored } from "@/shared/utils/storage";
 
 interface SearchPanelProps {
   isOpen: boolean;
   onClose: () => void;
+  /** Whether the Call playing is a live one rather than a result. */
+  playingLive?: boolean;
+  /** Live Calls waiting in the player's queue. */
+  queuedLive?: number;
 }
+
+/**
+ * How long auto-refresh waits after a new Call before fetching, so a burst
+ * of Calls ending together costs one request.
+ */
+const AUTO_REFRESH_DELAY_MS = 1000;
+
+/** Remembers the Auto-refresh switch in this browser. */
+const AUTO_REFRESH_STORAGE_KEY = "squelch-search-auto-refresh";
 
 function formatTime(unix: number): string {
   const d = new Date(unix * 1000);
@@ -79,6 +104,38 @@ function formatTalkgroupLabelName(
     cleanName ||
     (talkgroupId != null ? `TGID: ${talkgroupId}` : "(Unnamed Talkgroup)")
   );
+}
+
+type Shortcut = "toggle" | "back" | "forward";
+
+/**
+ * The panel's shortcut for a key: Space plays and pauses, Left and Right
+ * skip back and forward. None where the key belongs to the control it was
+ * pressed in — a text field, a dropdown, a checkbox. Buttons give up Space
+ * (Enter still presses them): a click leaves focus on the button, and
+ * Space would press it again. The waveform's seek slider gives up the
+ * arrows, which would otherwise stop skipping after every waveform click.
+ */
+function shortcutFor(e: KeyboardEvent): Shortcut | null {
+  if (e.defaultPrevented || e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) {
+    return null;
+  }
+  const action: Shortcut | null =
+    e.key === " "
+      ? "toggle"
+      : e.key === "ArrowLeft"
+        ? "back"
+        : e.key === "ArrowRight"
+          ? "forward"
+          : null;
+  if (!action) return null;
+  const el = e.target;
+  if (el instanceof HTMLElement && el.isContentEditable) return null;
+  if (el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) {
+    return null;
+  }
+  if (el instanceof HTMLInputElement && el.type !== "range") return null;
+  return action;
 }
 
 // ── Filter section ────────────────────────────────────────────────────────────
@@ -170,7 +227,12 @@ function CheckItem({
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function SearchPanel({ isOpen, onClose }: SearchPanelProps) {
+export default function SearchPanel({
+  isOpen,
+  onClose,
+  playingLive = false,
+  queuedLive = 0,
+}: SearchPanelProps) {
   const dispatch = useAppDispatch();
   const filters = useAppSelector((s) => s.calls);
   const config = useAppSelector((s) => s.scanner.config);
@@ -181,6 +243,10 @@ export default function SearchPanel({ isOpen, onClose }: SearchPanelProps) {
   const currentCallId = useAppSelector((s) =>
     s.scanner.isAudioActive ? s.scanner.currentCall?.id : undefined,
   );
+  const currentCall = useAppSelector((s) => s.scanner.currentCall);
+  const lastCallId = currentCall?.id;
+  const backgroundAudio = useAppSelector((s) => s.scanner.backgroundAudio);
+  const streamState = useAppSelector((s) => s.scanner.streamState);
   const isPaused = useAppSelector((s) => s.scanner.isPaused);
   const isAuthenticated = !!token;
   const shareableLinks = config?.shareableLinks ?? false;
@@ -208,6 +274,18 @@ export default function SearchPanel({ isOpen, onClose }: SearchPanelProps) {
       })),
     );
   }, [systems]);
+
+  // A result names its talkgroup by radio ID within its system; the filter
+  // takes the talkgroup's own ID. Radio IDs can repeat across systems.
+  const talkgroupIdOf = useMemo(() => {
+    const ids = new Map<string, number>();
+    for (const tg of allTalkgroups) {
+      const sys = systems.find((s) => s.id === tg.systemId);
+      if (sys) ids.set(`${sys.systemId}:${tg.talkgroupId}`, tg.id);
+    }
+    return (call: CallSearchResult) =>
+      ids.get(`${call.systemId}:${call.talkgroupId}`);
+  }, [allTalkgroups, systems]);
 
   const filterRows = useMemo(
     () =>
@@ -448,9 +526,14 @@ export default function SearchPanel({ isOpen, onClose }: SearchPanelProps) {
     return params;
   }, [filters]);
 
-  const { data, isFetching, refetch } = useSearchCallsQuery(queryParams, {
-    skip: !isOpen,
-  });
+  const { data, currentData, isFetching, refetch } = useSearchCallsQuery(
+    queryParams,
+    { skip: !isOpen },
+  );
+  // The overlay is for a list still to come: new filters or a page not yet
+  // loaded. A refresh of the list on screen (auto-refresh, autoplay warming
+  // a page crossing, the Refresh button) keeps it in view and quiet.
+  const isLoading = isFetching && !currentData;
 
   const calls = useMemo(() => data?.calls ?? [], [data]);
   const total = data?.total ?? 0;
@@ -487,7 +570,18 @@ export default function SearchPanel({ isOpen, onClose }: SearchPanelProps) {
   }, [filters]);
 
   const autoplay = useSearchAutoplay({ isOpen, calls, queryParams });
-  const { play } = autoplay;
+  const { skip, play: autoplayPlay } = autoplay;
+
+  // Whether the transport moved playback, so the list should follow it.
+  // A row played by hand is under the pointer already.
+  const followCurrent = useRef(false);
+  const play = useCallback(
+    (call: CallSearchResult, startAt?: number) => {
+      followCurrent.current = false;
+      autoplayPlay(call, startAt);
+    },
+    [autoplayPlay],
+  );
 
   // The current row's Play button pauses and resumes, the same toggle as
   // the scanner's transport, which the full-screen panel covers.
@@ -505,14 +599,156 @@ export default function SearchPanel({ isOpen, onClose }: SearchPanelProps) {
     [currentCallId, play],
   );
 
-  // Keep the Call autoplay moved on to in view, including after it crosses
-  // to another page. Not for plays chosen by hand: the row is under the
-  // pointer already.
+  // ── Transport ──
+  // Back and Forward step through time, as autoplay does: up the list for
+  // Newest first, down it for Oldest first, across pages either way.
+  // They skip from the last result played here, playing or not, so they
+  // still work after it ends with autoplay off, or while a live Call that
+  // queued behind it plays. Otherwise from the last Call heard at all.
+  const anchorId = autoplay.lastPlayed ?? lastCallId;
+  const lastIndex = calls.findIndex((c) => c.id === anchorId);
+  const listStep = filters.sort === "asc" ? 1 : -1;
+  const canSkip = (dir: 1 | -1) => {
+    if (lastIndex < 0) return false;
+    const step = dir * listStep;
+    if (calls[lastIndex + step]) return true;
+    const neighbour = filters.page + step;
+    return neighbour >= 1 && neighbour <= totalPages;
+  };
+  const handleSkip = (dir: 1 | -1) => {
+    if (anchorId == null) return;
+    followCurrent.current = true;
+    skip(anchorId, dir);
+  };
+  // Play pauses and resumes the Call playing; otherwise it plays the last
+  // Call heard again, or the top of the list.
+  const handleTransportPlay = () => {
+    if (currentCallId != null) {
+      handleTogglePause();
+      return;
+    }
+    const call = calls[lastIndex] ?? calls[0];
+    if (!call) return;
+    play(call);
+    followCurrent.current = true;
+  };
+  const transportPlaying = currentCallId != null && !isPaused;
+
+  // A live Call is in no row, so without a word here it plays from
+  // nowhere: one that queued behind a search Call, or the server stream
+  // coming back after one. Live Calls waiting their turn are counted.
+  const live = !backgroundAudio
+    ? currentCallId != null && playingLive
+      ? "call"
+      : null
+    : currentCallId == null && streamState === "playing"
+      ? "stream"
+      : null;
+  const liveTalkgroup =
+    live === "call" && currentCall
+      ? formatTalkgroupLabelName(
+          currentCall.talkgroupLabel,
+          currentCall.talkgroupName,
+          currentCall.talkgroupId,
+        )
+      : "";
+  const queued = backgroundAudio ? 0 : queuedLive;
+
+  // The shortcuts run long after the render that registered them, so they
+  // read the latest transport from here.
+  const transport = useRef({ handleTransportPlay, handleSkip, canSkip });
   useEffect(() => {
-    if (!autoplay.enabled || currentCallId == null) return;
+    transport.current = { handleTransportPlay, handleSkip, canSkip };
+  });
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      const action = shortcutFor(e);
+      if (!action) return;
+      // Browsers press a focused button on Space's keyup, so that is
+      // cancelled as well as the keydown.
+      e.preventDefault();
+      if (e.type !== "keydown" || e.repeat) return;
+      const t = transport.current;
+      if (action === "toggle") t.handleTransportPlay();
+      else {
+        const dir = action === "forward" ? 1 : -1;
+        if (t.canSkip(dir)) t.handleSkip(dir);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("keyup", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keyup", onKey);
+    };
+  }, [isOpen]);
+
+  // Keep the Call autoplay or the transport moved on to in view, including
+  // after it crosses to another page. A skip is followed once, so a later
+  // refresh of the list doesn't pull the user back to it.
+  useEffect(() => {
+    if (currentCallId == null) return;
+    if (!autoplay.enabled && !followCurrent.current) return;
     const index = calls.findIndex((c) => c.id === currentCallId);
-    if (index >= 0) virtualizer.scrollToIndex(index, { align: "auto" });
+    if (index < 0) return;
+    virtualizer.scrollToIndex(index, { align: "auto" });
+    followCurrent.current = false;
   }, [autoplay.enabled, currentCallId, calls, virtualizer]);
+
+  // ── Auto-refresh ──
+  // The server sends every Call this user may hear as it is ingested,
+  // whatever LIVE and the selection say, which is the set search covers.
+  // Newest first past page 1, each new Call shifts every row down one, so
+  // those pages wait; elsewhere new Calls only add rows.
+  const [autoRefresh, setAutoRefreshState] = useState(
+    () => readStored(localStorage, AUTO_REFRESH_STORAGE_KEY) === "true",
+  );
+  const setAutoRefresh = (on: boolean) => {
+    setAutoRefreshState(on);
+    writeStored(localStorage, AUTO_REFRESH_STORAGE_KEY, String(on));
+  };
+  const refreshable = filters.sort === "asc" || filters.page === 1;
+  useEffect(() => {
+    if (!isOpen || !autoRefresh || !refreshable) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const unsubscribe = dispatch(
+      addListener({
+        actionCreator: callReceived,
+        effect: () => {
+          if (timer) return; // a refresh is already due
+          timer = setTimeout(() => {
+            timer = undefined;
+            void refetch();
+          }, AUTO_REFRESH_DELAY_MS);
+        },
+      }),
+    );
+    return () => {
+      unsubscribe();
+      clearTimeout(timer);
+    };
+  }, [dispatch, isOpen, autoRefresh, refreshable, refetch]);
+
+  // Rows that arrive above the ones being read push them down. Unless the
+  // list is at the top, where new rows are the point, scroll by as much so
+  // what is under the pointer stays there. Only for the same query fetched
+  // again: new filters or another sort are a different list, not new rows.
+  const shown = useRef<{ query: string; first?: number }>(undefined);
+  useLayoutEffect(() => {
+    // `data` keeps the last query's results while the next one loads.
+    if (!currentData) return;
+    const query = JSON.stringify(queryParams);
+    const previous = shown.current;
+    shown.current = { query, first: calls[0]?.id };
+    const el = parentRef.current;
+    if (previous?.query !== query || previous.first == null) return;
+    if (!el || el.scrollTop === 0) return;
+    const shift = calls.findIndex((c) => c.id === previous.first);
+    if (shift <= 0) return;
+    el.scrollTop += virtualizer.measurementsCache[shift]?.start ?? 0;
+  }, [calls, currentData, queryParams, virtualizer]);
 
   const [showFilters, setShowFilters] = useState(false);
 
@@ -854,53 +1090,158 @@ export default function SearchPanel({ isOpen, onClose }: SearchPanelProps) {
             !showFilters ? "flex" : "hidden"
           } md:flex flex-1 flex-col min-h-0`}
         >
-          {/* Paginator */}
-          <div className="flex items-center justify-between border-b border-base-300 px-4 py-2 shrink-0">
-            <div className="join">
-              <button
-                className="join-item btn btn-sm"
-                disabled={filters.page <= 1}
-                onClick={() => dispatch(setPage(filters.page - 1))}
+          {/* Paginator, transport, switches. Laid out by the width of this
+              column, which the sidebar beside it varies: the transport has
+              the middle of the bar only where the switches and the live
+              indicator fit beside it, and a row of its own otherwise. */}
+          <div className="@container shrink-0 border-b border-base-300">
+            <div className="grid grid-cols-2 items-center gap-x-3 gap-y-2 px-4 py-2 @6xl:grid-cols-[1fr_auto_1fr]">
+              <div className="join justify-self-start">
+                <button
+                  className="join-item btn btn-sm"
+                  disabled={filters.page <= 1}
+                  onClick={() => dispatch(setPage(filters.page - 1))}
+                  aria-label="Previous page"
+                >
+                  <ChevronLeft size={14} />
+                  <span className="hidden @md:inline">Prev</span>
+                </button>
+                <button className="join-item btn btn-sm btn-disabled pointer-events-none">
+                  Page {filters.page} of {totalPages}
+                </button>
+                <button
+                  className="join-item btn btn-sm"
+                  disabled={filters.page >= totalPages}
+                  onClick={() => dispatch(setPage(filters.page + 1))}
+                  aria-label="Next page"
+                >
+                  <span className="hidden @md:inline">Next</span>
+                  <ChevronRight size={14} />
+                </button>
+              </div>
+              <div
+                role="group"
+                aria-label="Playback"
+                className="relative col-span-2 row-start-2 flex items-center gap-1 justify-self-center @6xl:col-span-1 @6xl:col-start-2 @6xl:row-start-1"
               >
-                <ChevronLeft size={14} />
-                Prev
-              </button>
-              <button className="join-item btn btn-sm btn-disabled pointer-events-none">
-                Page {filters.page} of {totalPages}
-              </button>
-              <button
-                className="join-item btn btn-sm"
-                disabled={filters.page >= totalPages}
-                onClick={() => dispatch(setPage(filters.page + 1))}
-              >
-                Next
-                <ChevronRight size={14} />
-              </button>
-            </div>
-            <div className="flex items-center gap-3">
-              {total > 0 && (
-                <span className="text-xs text-base-content/40">
-                  {total.toLocaleString()} calls
-                </span>
-              )}
-              <label
-                className="flex cursor-pointer items-center gap-2"
-                title="When a call ends, play the next one forward in time"
-              >
-                <span className="text-xs text-base-content/60">Autoplay</span>
-                <input
-                  type="checkbox"
-                  className="toggle toggle-sm toggle-primary"
-                  checked={autoplay.enabled}
-                  onChange={(e) => autoplay.setEnabled(e.target.checked)}
-                />
-              </label>
+                <button
+                  className="btn btn-ghost btn-sm btn-circle"
+                  disabled={!canSkip(-1)}
+                  onClick={() => handleSkip(-1)}
+                  aria-label="Previous call"
+                  aria-keyshortcuts="ArrowLeft"
+                  title="The call before this one (←)"
+                >
+                  <SkipBack size={16} />
+                </button>
+                <button
+                  className="btn btn-primary btn-sm btn-circle"
+                  disabled={currentCallId == null && calls.length === 0}
+                  onClick={handleTransportPlay}
+                  aria-label={transportPlaying ? "Pause" : "Play"}
+                  aria-keyshortcuts="Space"
+                  title={`${transportPlaying ? "Pause" : "Play"} (Space)`}
+                >
+                  {transportPlaying ? <Pause size={16} /> : <Play size={16} />}
+                </button>
+                <button
+                  className="btn btn-ghost btn-sm btn-circle"
+                  disabled={!canSkip(1)}
+                  onClick={() => handleSkip(1)}
+                  aria-label="Next call"
+                  aria-keyshortcuts="ArrowRight"
+                  title="The call after this one (→)"
+                >
+                  <SkipForward size={16} />
+                </button>
+                {/* Beside the transport without moving it: it stays put
+                    under the pointer as the indicator comes and goes. */}
+                <div
+                  role="status"
+                  className="absolute left-full top-1/2 ml-3 flex -translate-y-1/2 flex-col whitespace-nowrap text-[11px] font-medium leading-tight"
+                >
+                  {live && (
+                    <span
+                      className="flex max-w-32 items-center gap-1 text-error"
+                      title={
+                        live === "call"
+                          ? `A live call is playing: ${liveTalkgroup}`
+                          : "The live stream is playing"
+                      }
+                    >
+                      <span
+                        className={`h-2 w-2 shrink-0 rounded-full bg-error ${
+                          isPaused ? "" : "animate-pulse"
+                        }`}
+                        aria-hidden="true"
+                      />
+                      <span className="truncate">
+                        {live === "call" ? `Live: ${liveTalkgroup}` : "Live stream"}
+                      </span>
+                    </span>
+                  )}
+                  {queued > 0 && (
+                    <span
+                      className="text-warning"
+                      title="Live calls play once search playback stops"
+                    >
+                      {queued} live queued
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="col-start-2 row-start-1 flex items-center gap-3 justify-self-end @6xl:col-start-3">
+                {total > 0 && (
+                  <span className="hidden text-xs text-base-content/40 @xl:inline">
+                    {total.toLocaleString()} calls
+                  </span>
+                )}
+                {/* Stacked where the bar is narrow, side by side otherwise. */}
+                <div className="flex flex-col items-end gap-1 @2xl:flex-row @2xl:items-center @2xl:gap-3">
+                  <label
+                    className="flex cursor-pointer items-center gap-2"
+                    title={
+                      autoRefresh && !refreshable
+                        ? "Waiting: past page 1 of Newest first, each new call would shift every row"
+                        : "Fetch the results again as new calls are recorded"
+                    }
+                  >
+                    <span
+                      className={`text-xs ${
+                        autoRefresh && !refreshable
+                          ? "text-warning"
+                          : "text-base-content/60"
+                      }`}
+                    >
+                      Auto-refresh
+                    </span>
+                    <input
+                      type="checkbox"
+                      className="toggle toggle-sm toggle-primary"
+                      checked={autoRefresh}
+                      onChange={(e) => setAutoRefresh(e.target.checked)}
+                    />
+                  </label>
+                  <label
+                    className="flex cursor-pointer items-center gap-2"
+                    title="When a call ends, play the next one forward in time"
+                  >
+                    <span className="text-xs text-base-content/60">Autoplay</span>
+                    <input
+                      type="checkbox"
+                      className="toggle toggle-sm toggle-primary"
+                      checked={autoplay.enabled}
+                      onChange={(e) => autoplay.setEnabled(e.target.checked)}
+                    />
+                  </label>
+                </div>
+              </div>
             </div>
           </div>
 
           {/* Results list */}
           <div ref={parentRef} className="relative flex-1 overflow-y-auto">
-            {isFetching && (
+            {isLoading && (
               <div className="absolute inset-0 z-10 flex items-center justify-center bg-base-100/60">
                 <span className="loading loading-spinner loading-md" />
               </div>
@@ -919,6 +1260,11 @@ export default function SearchPanel({ isOpen, onClose }: SearchPanelProps) {
               {virtualizer.getVirtualItems().map((virtualRow) => {
                 const call = calls[virtualRow.index];
                 const isCurrent = call.id === currentCallId;
+                const tgFilterId = talkgroupIdOf(call);
+                const onlyThisTalkgroup =
+                  tgFilterId != null &&
+                  filters.talkgroupIds.length === 1 &&
+                  filters.talkgroupIds[0] === tgFilterId;
                 return (
                   <div
                     key={call.id}
@@ -934,12 +1280,42 @@ export default function SearchPanel({ isOpen, onClose }: SearchPanelProps) {
                   >
                     {/* Call details */}
                     <div className="min-w-0 flex-1">
-                      {/* Row 1: talkgroup name */}
-                      <div className="text-xs font-medium truncate">
-                        {formatTalkgroupLabelName(
-                          call.talkgroupLabel,
-                          call.talkgroupName,
-                          call.talkgroupId,
+                      {/* Row 1: talkgroup name, and narrowing the search to
+                          it. Only the search filters change: the live
+                          scanner's talkgroup selection is its own. */}
+                      <div className="flex min-w-0 items-center gap-1">
+                        <span className="text-xs font-medium truncate">
+                          {formatTalkgroupLabelName(
+                            call.talkgroupLabel,
+                            call.talkgroupName,
+                            call.talkgroupId,
+                          )}
+                        </span>
+                        {tgFilterId != null && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              dispatch(
+                                setTalkgroupFilters(
+                                  onlyThisTalkgroup ? [] : [tgFilterId],
+                                ),
+                              )
+                            }
+                            className={`btn btn-ghost btn-square h-4 min-h-0 w-4 shrink-0 p-0 ${
+                              onlyThisTalkgroup
+                                ? "text-primary"
+                                : "text-base-content/40 hover:text-base-content"
+                            }`}
+                            aria-label="Only this talkgroup"
+                            aria-pressed={onlyThisTalkgroup}
+                            title={
+                              onlyThisTalkgroup
+                                ? "Show every talkgroup again"
+                                : "Search only this talkgroup"
+                            }
+                          >
+                            <ListFilter size={12} />
+                          </button>
                         )}
                       </div>
                       {/* Row 2: system */}

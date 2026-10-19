@@ -1,9 +1,14 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
-import { configureStore } from "@reduxjs/toolkit";
+import { configureStore, createListenerMiddleware } from "@reduxjs/toolkit";
 import { Provider } from "react-redux";
 import SearchPanel from "../components/SearchPanel";
-import { scannerSlice } from "../scannerSlice";
+import {
+  callReceived,
+  scannerSlice,
+  setAudioActive,
+  setCurrentCall,
+} from "../scannerSlice";
 import { authSlice } from "@/features/auth";
 import { callsSlice } from "../callsSlice";
 import { api } from "@/app/api";
@@ -48,6 +53,9 @@ vi.mock("@tanstack/react-virtual", () => ({
         key: i,
       })),
     getTotalSize: () => count * 44,
+    measurementsCache: Array.from({ length: count }, (_, i) => ({
+      start: i * 44,
+    })),
     measureElement: () => {},
     scrollToIndex: () => {},
   }),
@@ -64,7 +72,11 @@ function makeStore(preloadedState?: Partial<RootState>) {
       calls: callsSlice.reducer,
       [api.reducerPath]: api.reducer,
     },
-    middleware: (gDM) => gDM().concat(api.middleware),
+    // A listener middleware, as the app's store has, for auto-refresh.
+    middleware: (gDM) =>
+      gDM()
+        .prepend(createListenerMiddleware().middleware)
+        .concat(api.middleware),
     preloadedState: preloadedState as RootState,
   });
 }
@@ -155,11 +167,12 @@ function renderPanel(
   preloadedState?: Partial<RootState>,
   isOpen = true,
   onClose = vi.fn(),
+  live: { playingLive?: boolean; queuedLive?: number } = {},
 ) {
   const store = makeStore(preloadedState);
   const result = render(
     <Provider store={store}>
-      <SearchPanel isOpen={isOpen} onClose={onClose} />
+      <SearchPanel isOpen={isOpen} onClose={onClose} {...live} />
     </Provider>,
   );
   return { ...result, store, onClose };
@@ -170,6 +183,8 @@ function renderPanel(
 describe("SearchPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Autoplay and Auto-refresh are remembered between visits.
+    localStorage.clear();
     mockSearchCallsQuery.mockReturnValue({
       data: { calls: [], total: 0 },
       isFetching: false,
@@ -280,6 +295,174 @@ describe("SearchPanel", () => {
       const { store } = renderPanel({ scanner: scannerState() });
       fireEvent.click(screen.getByText("Next"));
       expect(store.getState().calls.page).toBe(2);
+    });
+  });
+
+  describe("auto-refresh", () => {
+    const refetch = vi.fn();
+    const arrived: Call = {
+      id: 50,
+      audioName: "call-50.m4a",
+      audioType: "audio/mp4",
+      dateTime: 1700000000,
+      systemId: 1,
+      system: 1,
+      talkgroupId: 10,
+      talkgroup: 10,
+    };
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      refetch.mockClear();
+      mockSearchCallsQuery.mockReturnValue({
+        data: { calls: [], total: 50 },
+        currentData: { calls: [], total: 50 },
+        isFetching: false,
+        refetch,
+      });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    const toggle = () =>
+      screen.getByRole("checkbox", { name: /auto-refresh/i });
+
+    it("is remembered in this browser", () => {
+      const { unmount } = renderPanel({ scanner: scannerState() });
+      fireEvent.click(toggle());
+      unmount();
+
+      renderPanel({ scanner: scannerState() });
+
+      expect(toggle()).toBeChecked();
+    });
+
+    it("is off to begin with, and ignores new calls", () => {
+      const { store } = renderPanel({ scanner: scannerState() });
+      expect(toggle()).not.toBeChecked();
+
+      act(() => {
+        store.dispatch(callReceived(arrived));
+        vi.runAllTimers();
+      });
+
+      expect(refetch).not.toHaveBeenCalled();
+    });
+
+    it("refreshes once for a burst of new calls", () => {
+      const { store } = renderPanel({ scanner: scannerState() });
+      fireEvent.click(toggle());
+
+      act(() => {
+        store.dispatch(callReceived(arrived));
+        store.dispatch(callReceived({ ...arrived, id: 51 }));
+        store.dispatch(callReceived({ ...arrived, id: 52 }));
+      });
+      expect(refetch).not.toHaveBeenCalled();
+      act(() => vi.runAllTimers());
+
+      expect(refetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("waits past page 1 of Newest first, where rows would shift", () => {
+      const { store } = renderPanel({ scanner: scannerState() });
+      fireEvent.click(toggle());
+      fireEvent.click(screen.getByText("Next"));
+
+      act(() => {
+        store.dispatch(callReceived(arrived));
+        vi.runAllTimers();
+      });
+
+      expect(refetch).not.toHaveBeenCalled();
+      expect(toggle().closest("label")).toHaveAttribute(
+        "title",
+        expect.stringMatching(/each new call would shift/i),
+      );
+    });
+
+    it("refreshes any page of Oldest first, which new calls only add to", () => {
+      const { store } = renderPanel({ scanner: scannerState() });
+      fireEvent.click(toggle());
+      fireEvent.change(screen.getByRole("combobox"), {
+        target: { value: "asc" },
+      });
+      fireEvent.click(screen.getByText("Next"));
+
+      act(() => {
+        store.dispatch(callReceived(arrived));
+        vi.runAllTimers();
+      });
+
+      expect(refetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("holds the rows being read in place as new ones arrive above", () => {
+      const row = (id: number) => ({
+        id,
+        audioName: `call-${id}.m4a`,
+        audioType: "audio/mp4",
+        dateTime: 1700000000 + id,
+        frequency: 0,
+        duration: 5,
+        source: 0,
+        systemId: 100,
+        talkgroupId: 200,
+        systemLabel: "Sys1",
+        talkgroupLabel: "TG1",
+        talkgroupName: "Talkgroup One",
+        talkgroupTag: "",
+        talkgroupGroup: "",
+        talkgroupLed: "",
+        transcript: "",
+        bookmarked: false,
+      });
+      const pageOf = (ids: number[]) => ({
+        data: { calls: ids.map(row), total: ids.length },
+        currentData: { calls: ids.map(row), total: ids.length },
+        isFetching: false,
+        refetch,
+      });
+      mockSearchCallsQuery.mockReturnValue(pageOf([3, 2, 1]));
+      const { store, container, rerender } = renderPanel({
+        scanner: scannerState(),
+      });
+      const list = container.querySelector<HTMLElement>(
+        ".relative.flex-1.overflow-y-auto",
+      )!;
+      list.scrollTop = 60;
+
+      // Two calls came in: the rows mocked at 44px each move down 88.
+      mockSearchCallsQuery.mockReturnValue(pageOf([5, 4, 3, 2, 1]));
+      rerender(
+        <Provider store={store}>
+          <SearchPanel isOpen onClose={vi.fn()} />
+        </Provider>,
+      );
+
+      expect(list.scrollTop).toBe(148);
+
+      // Another sort is a different list, whatever rows it shares.
+      mockSearchCallsQuery.mockReturnValue(pageOf([1, 2, 3, 4, 5]));
+      fireEvent.change(screen.getByRole("combobox"), {
+        target: { value: "asc" },
+      });
+
+      expect(list.scrollTop).toBe(148);
+    });
+
+    it("keeps the list in view while refreshing it", () => {
+      mockSearchCallsQuery.mockReturnValue({
+        data: { calls: [], total: 0 },
+        currentData: { calls: [], total: 0 },
+        isFetching: true,
+        refetch,
+      });
+      const { container } = renderPanel({ scanner: scannerState() });
+
+      expect(container.querySelector(".loading-spinner")).toBeNull();
     });
   });
 
@@ -459,6 +642,337 @@ describe("SearchPanel", () => {
         expect.objectContaining({ startAt: 6 }),
       );
       expect(player.seek).not.toHaveBeenCalled();
+    });
+
+    describe("only this talkgroup", () => {
+      const button = () =>
+        screen.getByRole("button", { name: "Only this talkgroup" });
+
+      it("narrows the search to the call's talkgroup, and back", () => {
+        // The result names talkgroup 200 of system 100; the filter takes
+        // that talkgroup's own ID, 10.
+        const { store } = renderPanel({ scanner: scannerState() });
+        expect(button()).toHaveAttribute("aria-pressed", "false");
+
+        fireEvent.click(button());
+        expect(store.getState().calls.talkgroupIds).toEqual([10]);
+        expect(button()).toHaveAttribute("aria-pressed", "true");
+
+        fireEvent.click(button());
+        expect(store.getState().calls.talkgroupIds).toEqual([]);
+      });
+
+      it("leaves the live scanner's talkgroup selection alone", () => {
+        const { store } = renderPanel({
+          scanner: scannerState({ tgSelection: { 200: true, 201: false } }),
+        });
+
+        fireEvent.click(button());
+
+        expect(store.getState().scanner.tgSelection).toEqual({
+          200: true,
+          201: false,
+        });
+      });
+
+      it("is not offered for a talkgroup the config does not know", () => {
+        mockSearchCallsQuery.mockReturnValue({
+          data: { calls: [{ ...result, talkgroupId: 999 }], total: 1 },
+          isFetching: false,
+        });
+        renderPanel({ scanner: scannerState() });
+
+        expect(
+          screen.queryByRole("button", { name: "Only this talkgroup" }),
+        ).toBeNull();
+      });
+    });
+
+    describe("transport", () => {
+      // Newest first: 8 is the newer call, at the top.
+      const newer = { ...result, id: 8, dateTime: 1700000060 };
+
+      beforeEach(() => {
+        mockSearchCallsQuery.mockReturnValue({
+          data: { calls: [newer, result], total: 2 },
+          isFetching: false,
+        });
+      });
+
+      it("plays the top of the list when nothing has been heard", () => {
+        renderPanel({ scanner: scannerState() });
+        expect(
+          screen.getByRole("button", { name: "Previous call" }),
+        ).toBeDisabled();
+        expect(screen.getByRole("button", { name: "Next call" })).toBeDisabled();
+
+        fireEvent.click(screen.getByRole("button", { name: "Play" }));
+
+        expect(player.playNow).toHaveBeenCalledWith(
+          expect.objectContaining({ id: 8 }),
+          expect.anything(),
+        );
+      });
+
+      it("pauses the call that is playing", () => {
+        const { store } = renderPanel({
+          scanner: scannerState({ currentCall: playing, isAudioActive: true }),
+        });
+
+        fireEvent.click(screen.getByRole("button", { name: "Pause" }));
+
+        expect(player.pause).toHaveBeenCalled();
+        expect(store.getState().scanner.isPaused).toBe(true);
+        expect(player.playNow).not.toHaveBeenCalled();
+      });
+
+      it("plays a finished call again", () => {
+        renderPanel({
+          scanner: scannerState({ currentCall: playing, isAudioActive: false }),
+        });
+
+        fireEvent.click(screen.getByRole("button", { name: "Play" }));
+
+        expect(player.playNow).toHaveBeenCalledWith(
+          expect.objectContaining({ id: 7 }),
+          expect.anything(),
+        );
+      });
+
+      it("skips forward in time, up the list for Newest first", () => {
+        renderPanel({
+          scanner: scannerState({ currentCall: playing, isAudioActive: true }),
+        });
+        // 7 is the older of the two, on the only page.
+        expect(
+          screen.getByRole("button", { name: "Previous call" }),
+        ).toBeDisabled();
+
+        fireEvent.click(screen.getByRole("button", { name: "Next call" }));
+
+        expect(player.playNow).toHaveBeenCalledWith(
+          expect.objectContaining({ id: 8 }),
+          expect.anything(),
+        );
+      });
+
+      it("pauses on Space, not skips again, after a skip", () => {
+        // Regression: the click left focus on Next call, and Space pressed
+        // it again, skipping over and over.
+        const { store } = renderPanel({
+          scanner: scannerState({ currentCall: playing, isAudioActive: true }),
+        });
+        const next = screen.getByRole("button", { name: "Next call" });
+
+        const down = fireEvent.keyDown(next, { key: " " });
+        const up = fireEvent.keyUp(next, { key: " " });
+
+        expect(down).toBe(false); // default prevented
+        expect(up).toBe(false);
+        expect(store.getState().scanner.isPaused).toBe(true);
+        expect(player.pause).toHaveBeenCalledTimes(1);
+        expect(player.playNow).not.toHaveBeenCalled();
+      });
+
+      describe("keyboard", () => {
+        it("pauses on Space with nothing focused", () => {
+          // Regression: tab away and back, and focus is on the page, not
+          // a transport button, so Space did nothing.
+          const { store } = renderPanel({
+            scanner: scannerState({ currentCall: playing, isAudioActive: true }),
+          });
+
+          expect(fireEvent.keyDown(document.body, { key: " " })).toBe(false);
+
+          expect(store.getState().scanner.isPaused).toBe(true);
+        });
+
+        it("skips forward on Right and back on Left", () => {
+          renderPanel({
+            scanner: scannerState({ currentCall: playing, isAudioActive: true }),
+          });
+
+          fireEvent.keyDown(document.body, { key: "ArrowRight" });
+          expect(player.playNow).toHaveBeenLastCalledWith(
+            expect.objectContaining({ id: 8 }),
+            expect.anything(),
+          );
+
+          fireEvent.keyDown(document.body, { key: "ArrowLeft" });
+          expect(player.playNow).toHaveBeenLastCalledWith(
+            expect.objectContaining({ id: 7 }),
+            expect.anything(),
+          );
+        });
+
+        it("skips with the arrows after a waveform click, not seeks", () => {
+          mockGetCallPeaksQuery.mockReturnValue({
+            data: { peaks: [0.5, 1, 0.25], duration: 10 },
+          });
+          renderPanel({
+            scanner: scannerState({ currentCall: playing, isAudioActive: true }),
+          });
+          const [slider] = screen.getAllByRole("slider", { name: /seek/i });
+
+          expect(fireEvent.keyDown(slider, { key: "ArrowRight" })).toBe(false);
+
+          expect(player.playNow).toHaveBeenCalledWith(
+            expect.objectContaining({ id: 8 }),
+            expect.anything(),
+          );
+        });
+
+        it("leaves the keys alone in a text field", () => {
+          const { store } = renderPanel({
+            scanner: scannerState({ currentCall: playing, isAudioActive: true }),
+          });
+          const field = screen.getByPlaceholderText("Search transcripts...");
+
+          expect(fireEvent.keyDown(field, { key: " " })).toBe(true);
+          expect(fireEvent.keyDown(field, { key: "ArrowRight" })).toBe(true);
+
+          expect(store.getState().scanner.isPaused).toBe(false);
+          expect(player.playNow).not.toHaveBeenCalled();
+        });
+
+        it("leaves the keys alone with a modifier held", () => {
+          // Alt+Left is the browser's Back.
+          renderPanel({
+            scanner: scannerState({ currentCall: playing, isAudioActive: true }),
+          });
+
+          expect(
+            fireEvent.keyDown(document.body, { key: "ArrowRight", altKey: true }),
+          ).toBe(true);
+          expect(player.playNow).not.toHaveBeenCalled();
+        });
+
+        it("stops listening once the panel closes", () => {
+          const { store, rerender } = renderPanel({
+            scanner: scannerState({ currentCall: playing, isAudioActive: true }),
+          });
+          rerender(
+            <Provider store={store}>
+              <SearchPanel isOpen={false} onClose={vi.fn()} />
+            </Provider>,
+          );
+
+          expect(fireEvent.keyDown(document.body, { key: " " })).toBe(true);
+          expect(store.getState().scanner.isPaused).toBe(false);
+        });
+      });
+
+      describe("live indicator", () => {
+        const liveCall: Call = {
+          ...playing,
+          id: 99,
+          talkgroupLabel: "FD1",
+          talkgroupName: "Fire Ops",
+        };
+
+        it("says when a live call is playing, and which", () => {
+          renderPanel(
+            {
+              scanner: scannerState({
+                currentCall: liveCall,
+                isAudioActive: true,
+              }),
+            },
+            true,
+            vi.fn(),
+            { playingLive: true },
+          );
+
+          expect(screen.getByRole("status")).toHaveTextContent(
+            "Live: FD1 - Fire Ops",
+          );
+        });
+
+        it("says nothing about a search call playing", () => {
+          renderPanel({
+            scanner: scannerState({ currentCall: playing, isAudioActive: true }),
+          });
+
+          expect(screen.getByRole("status")).toBeEmptyDOMElement();
+        });
+
+        it("counts the live calls waiting", () => {
+          renderPanel(
+            {
+              scanner: scannerState({
+                currentCall: playing,
+                isAudioActive: true,
+              }),
+            },
+            true,
+            vi.fn(),
+            { queuedLive: 2 },
+          );
+
+          expect(screen.getByRole("status")).toHaveTextContent("2 live queued");
+        });
+
+        it("says when the live stream is playing in background mode", () => {
+          renderPanel(
+            {
+              scanner: scannerState({
+                backgroundAudio: true,
+                streamState: "playing",
+              }),
+            },
+            true,
+            vi.fn(),
+            // The local queue is not in use while the stream plays.
+            { queuedLive: 3 },
+          );
+
+          const status = screen.getByRole("status");
+          expect(status).toHaveTextContent("Live stream");
+          expect(status).not.toHaveTextContent("queued");
+        });
+
+        it("keeps skipping from the last result while a live call plays", () => {
+          const { store, rerender } = renderPanel({
+            scanner: scannerState(),
+          });
+          fireEvent.click(screen.getAllByRole("button", { name: "Play call" })[1]);
+          // Call 7 ended and a queued live call took over.
+          act(() => {
+            store.dispatch(setCurrentCall(liveCall));
+            store.dispatch(setAudioActive(true));
+          });
+          rerender(
+            <Provider store={store}>
+              <SearchPanel isOpen onClose={vi.fn()} playingLive />
+            </Provider>,
+          );
+          player.playNow.mockClear();
+
+          fireEvent.click(screen.getByRole("button", { name: "Next call" }));
+
+          expect(player.playNow).toHaveBeenCalledWith(
+            expect.objectContaining({ id: 8 }),
+            expect.anything(),
+          );
+        });
+      });
+
+      it("skips back from a call that has ended", () => {
+        renderPanel({
+          scanner: scannerState({
+            currentCall: { ...playing, id: 8 },
+            isAudioActive: false,
+          }),
+        });
+        expect(screen.getByRole("button", { name: "Next call" })).toBeDisabled();
+
+        fireEvent.click(screen.getByRole("button", { name: "Previous call" }));
+
+        expect(player.playNow).toHaveBeenCalledWith(
+          expect.objectContaining({ id: 7 }),
+          expect.anything(),
+        );
+      });
     });
   });
 });

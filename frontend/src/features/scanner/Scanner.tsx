@@ -190,7 +190,12 @@ export default function Scanner() {
         isOpen={selectTGOpen}
         onClose={() => setSelectTGOpen(false)}
       />
-      <SearchPanel isOpen={searchOpen} onClose={() => setSearchOpen(false)} />
+      <SearchPanel
+        isOpen={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        playingLive={scanner.playingLive}
+        queuedLive={scanner.pendingCount}
+      />
       <BookmarksPanel
         isOpen={bookmarksOpen}
         onClose={() => setBookmarksOpen(false)}

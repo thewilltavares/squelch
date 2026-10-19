@@ -24,6 +24,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or page change, when search closes, or after three calls in a row cannot be
   played. Live calls wait in the queue while it runs, as they already do
   behind a call played from search.
+- **Playback controls in search.** Back, play/pause and forward sit above
+  the results. Back and forward step one call through time, as autoplay
+  does, across pages, with autoplay on or off. Space plays and pauses and
+  the arrow keys skip, anywhere in the panel but text fields and dropdowns.
+- **Search shows when live audio is playing.** A live call is in no row, so
+  it seemed to play from nowhere. A red label beside the controls now names
+  its talkgroup while one plays (or the live stream, in background mode),
+  and a count shows the live calls waiting behind search playback.
+- **Auto-refresh in search.** A toggle beside Autoplay fetches the results
+  again as new calls are recorded. Rows being read stay where they are as
+  new ones arrive above them. Past page 1 of Newest first it waits, since
+  each new call there would shift every row.
+- **Search a call's talkgroup in one click.** A button beside each result's
+  talkgroup narrows the search to it, and back. The live scanner's talkgroup
+  selection is not affected.
+- **Search remembers Autoplay and Auto-refresh** in the browser.
 
 ## [3.1.0] — 2026-09-29
 

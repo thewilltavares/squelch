@@ -138,6 +138,7 @@ describe("useSearchAutoplay", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.clear();
     store = makeStore();
     serve({});
   });
@@ -403,6 +404,89 @@ describe("useSearchAutoplay", () => {
     act(() => hook.current.play(result(1)));
 
     expect(player.resume).not.toHaveBeenCalled();
+  });
+
+  it("skips forward in time with autoplay off", () => {
+    const { result: hook } = setup(store, {
+      isOpen: true,
+      calls: page([3, 2], 3).calls,
+      queryParams: params("desc", 2),
+    });
+
+    act(() => hook.current.skip(2, 1));
+
+    expect(played()).toEqual([3]);
+  });
+
+  it("skips back in time, down the list for Newest first", () => {
+    const { result: hook } = setup(store, {
+      isOpen: true,
+      calls: page([3, 2], 3).calls,
+      queryParams: params("desc", 1),
+    });
+
+    act(() => hook.current.skip(3, -1));
+
+    expect(played()).toEqual([2]);
+  });
+
+  it("skips back across a page, fetching it, to its newest call", async () => {
+    // Newest first: page 1 holds 4 and 3, page 2 holds 2 and 1. Back in
+    // time from 3 is 2, the top of page 2, which nothing has prefetched.
+    serve({ 2: page([2, 1], 4) });
+    const { result: hook } = setup(store, {
+      isOpen: true,
+      calls: page([4, 3], 4).calls,
+      queryParams: params("desc", 1),
+    });
+
+    act(() => hook.current.skip(3, -1));
+
+    await waitFor(() => expect(played()).toEqual([2]));
+    expect(store.getState().calls.page).toBe(2);
+  });
+
+  it("does nothing skipping back from the oldest call", async () => {
+    await seed(store, params("asc", 1), page([1, 2], 2));
+    const { result: hook } = setup(store, {
+      isOpen: true,
+      calls: page([1, 2], 2).calls,
+      queryParams: params("asc", 1),
+    });
+
+    act(() => hook.current.skip(1, -1));
+
+    expect(played()).toEqual([]);
+  });
+
+  it("remembers the last result it started, by hand or by autoplay", () => {
+    const { result: hook } = setup(store, {
+      isOpen: true,
+      calls: page([1, 2], 2).calls,
+      queryParams: params("asc", 1),
+    });
+    expect(hook.current.lastPlayed).toBeUndefined();
+    act(() => hook.current.setEnabled(true));
+
+    act(() => hook.current.play(result(1)));
+    endLatest();
+
+    expect(hook.current.lastPlayed).toBe(2);
+  });
+
+  it("remembers the switch in this browser", () => {
+    const initial = {
+      isOpen: true,
+      calls: page([1, 2], 2).calls,
+      queryParams: params("asc", 1),
+    };
+    const first = setup(store, initial);
+    act(() => first.result.current.setEnabled(true));
+    first.unmount();
+
+    const { result: hook } = setup(store, initial);
+
+    expect(hook.current.enabled).toBe(true);
   });
 
   it("starts partway in when asked", () => {

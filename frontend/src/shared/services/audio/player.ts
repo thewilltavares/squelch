@@ -93,7 +93,7 @@ class AudioPlayer {
   private lastItem: QueueItem | null = null;
   private _paused = false;
   private _playing = false;
-  private callStartCb: ((call: Call) => void) | null = null;
+  private callStartCb: ((call: Call, live: boolean) => void) | null = null;
   private callEndCb: (() => void) | null = null;
   private queueChangeCb: ((length: number) => void) | null = null;
   private authRecovery: (() => Promise<boolean>) | null = null;
@@ -422,7 +422,8 @@ class AudioPlayer {
     return this.audio.currentTime || 0;
   }
 
-  setOnCallStart(cb: (call: Call) => void): void {
+  /** `live` is true for an ingested Call, false for one played on demand. */
+  setOnCallStart(cb: (call: Call, live: boolean) => void): void {
     this.callStartCb = cb;
   }
 
@@ -605,7 +606,7 @@ class AudioPlayer {
   private startPlayback(item: QueueItem): void {
     this.currentItem = item;
     this.lastItem = item;
-    this.callStartCb?.(item.call);
+    this.callStartCb?.(item.call, !item.onDemand);
     this.updateMediaSession(item.call);
     this.ensureContext();
     this.ensureAudioElement();

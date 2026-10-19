@@ -17,22 +17,27 @@ export function useAudioPlayer() {
   const [volume, setVolumeState] = useState(() => audioPlayer.getVolume());
   const [playing, setPlaying] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
+  // Whether the Call playing is a live one rather than one played on
+  // demand. The search panel shows it, since a live Call is in no row.
+  const [playingLive, setPlayingLive] = useState(false);
 
   // Track previous hold values to detect activation
   const prevHeldTG = useRef(heldTG);
   const prevHeldSystem = useRef(heldSystem);
 
   useEffect(() => {
-    audioPlayer.setOnCallStart((call) => {
+    audioPlayer.setOnCallStart((call, live) => {
       dispatch(setCurrentCall(call));
       dispatch(setAudioActive(true));
       setPlaying(true);
+      setPlayingLive(live);
     });
 
     audioPlayer.setOnCallEnd(() => {
       dispatch(clearCurrentCall());
       dispatch(setAudioActive(false));
       setPlaying(false);
+      setPlayingLive(false);
     });
 
     audioPlayer.setOnQueueChange((length) => {
@@ -125,6 +130,7 @@ export function useAudioPlayer() {
     setVolume,
     volume,
     isPlaying: playing,
+    playingLive,
     pendingCount,
     download,
   };

@@ -605,6 +605,25 @@ describe("audioPlayer", () => {
     expect(player.getCurrentCall()?.id).toBe(2);
   });
 
+  it("tells the call-start listener whether each call is live", async () => {
+    // The search panel says so when a queued live call plays: it is in no
+    // row there, so otherwise it plays from nowhere.
+    const player = await loadPlayer();
+    const onStart = vi.fn();
+    player.setOnCallStart(onStart);
+    player.playNow(makeCall(1));
+    player.enqueue(makeCall(2));
+    await Promise.resolve();
+
+    lastElement().emit("ended");
+    await Promise.resolve();
+
+    expect(onStart.mock.calls.map(([call, live]) => [call.id, live])).toEqual([
+      [1, false],
+      [2, true],
+    ]);
+  });
+
   it("tells the continuation when a call could not be played", async () => {
     // Autoplay passes over one bad file, but stops when calls keep failing
     // (the server is down); it can only tell the two apart if told.
