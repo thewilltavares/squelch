@@ -9,11 +9,13 @@ import { callsSlice } from "../callsSlice";
 import { api } from "@/app/api";
 import type { RootState } from "@/app/store";
 import type { ScannerConfig } from "@/types";
+import type { Call } from "../types";
 import { trMqttReducer } from "@/app/store";
 
 // --- Mocks ---
 
 const mockSearchCallsQuery = vi.fn();
+const mockGetCallPeaksQuery = vi.fn();
 
 vi.mock("../callsSlice", async () => {
   const actual = await vi.importActual<
@@ -22,8 +24,19 @@ vi.mock("../callsSlice", async () => {
   return {
     ...actual,
     useSearchCallsQuery: (...args: unknown[]) => mockSearchCallsQuery(...args),
+    useGetCallPeaksQuery: (...args: unknown[]) =>
+      mockGetCallPeaksQuery(...args),
   };
 });
+
+const player = vi.hoisted(() => ({
+  playNow: vi.fn(),
+  pause: vi.fn(),
+  resume: vi.fn(),
+  seek: vi.fn(),
+}));
+
+vi.mock("@/shared/services/audio/player", () => ({ audioPlayer: player }));
 
 vi.mock("@tanstack/react-virtual", () => ({
   useVirtualizer: ({ count }: { count: number }) => ({
@@ -36,6 +49,7 @@ vi.mock("@tanstack/react-virtual", () => ({
       })),
     getTotalSize: () => count * 44,
     measureElement: () => {},
+    scrollToIndex: () => {},
   }),
 }));
 
@@ -155,10 +169,12 @@ function renderPanel(
 
 describe("SearchPanel", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     mockSearchCallsQuery.mockReturnValue({
       data: { calls: [], total: 0 },
       isFetching: false,
     });
+    mockGetCallPeaksQuery.mockReturnValue({ data: undefined });
   });
 
   describe("panel visibility", () => {
@@ -306,6 +322,143 @@ describe("SearchPanel", () => {
       renderPanel({ scanner: scannerState() });
       expect(screen.getByText("TG1 - Talkgroup One")).toBeInTheDocument();
       expect(screen.getByText("Sys1")).toBeInTheDocument();
+    });
+  });
+
+  describe("playback", () => {
+    const result = {
+      id: 7,
+      audioName: "call-7.m4a",
+      audioType: "audio/mp4",
+      dateTime: 1700000000,
+      frequency: 0,
+      duration: 6,
+      source: 0,
+      systemId: 100,
+      talkgroupId: 200,
+      systemLabel: "Sys1",
+      talkgroupLabel: "TG1",
+      talkgroupName: "Talkgroup One",
+      talkgroupTag: "Law",
+      talkgroupGroup: "Police",
+      talkgroupLed: "",
+      transcript: "",
+      bookmarked: false,
+    };
+    /** The same Call, as the player reports it while it plays. */
+    const playing: Call = {
+      id: 7,
+      audioName: "call-7.m4a",
+      audioType: "audio/mp4",
+      dateTime: 1700000000,
+      systemId: 100,
+      system: 100,
+      talkgroupId: 200,
+      talkgroup: 200,
+    };
+
+    beforeEach(() => {
+      mockSearchCallsQuery.mockReturnValue({
+        data: { calls: [result], total: 1 },
+        isFetching: false,
+      });
+    });
+
+    it("has an Autoplay toggle, off to begin with", () => {
+      renderPanel({ scanner: scannerState() });
+      const toggle = screen.getByRole("checkbox", { name: /autoplay/i });
+      expect(toggle).not.toBeChecked();
+      fireEvent.click(toggle);
+      expect(toggle).toBeChecked();
+    });
+
+    it("plays a call from its row", () => {
+      renderPanel({ scanner: scannerState() });
+      fireEvent.click(screen.getByRole("button", { name: "Play call" }));
+      expect(player.playNow).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 7 }),
+        expect.objectContaining({ onEnded: expect.any(Function) }),
+      );
+    });
+
+    it("marks the playing call and lets its row pause it", () => {
+      // The full-screen panel covers the scanner's own transport, so the
+      // playing row carries the pause control.
+      const { store } = renderPanel({
+        scanner: scannerState({
+          currentCall: playing,
+          isAudioActive: true,
+        }),
+      });
+      const button = screen.getByRole("button", { name: "Pause call" });
+      expect(button.closest("[aria-current]")).not.toBeNull();
+
+      fireEvent.click(button);
+      expect(player.pause).toHaveBeenCalled();
+      expect(store.getState().scanner.isPaused).toBe(true);
+    });
+
+    it("starts a call that is not playing from the point chosen on its waveform", () => {
+      mockGetCallPeaksQuery.mockReturnValue({
+        data: { peaks: [0.5, 1, 0.25], duration: 10 },
+      });
+      renderPanel({ scanner: scannerState() });
+
+      fireEvent.change(screen.getByRole("slider", { name: /seek/i }), {
+        target: { value: "4" },
+      });
+
+      expect(player.playNow).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 7 }),
+        expect.objectContaining({ startAt: 4 }),
+      );
+      expect(player.seek).not.toHaveBeenCalled();
+    });
+
+    it("seeks within the call that is already playing", () => {
+      mockGetCallPeaksQuery.mockReturnValue({
+        data: { peaks: [0.5, 1, 0.25], duration: 10 },
+      });
+      renderPanel({
+        scanner: scannerState({
+          currentCall: playing,
+          isAudioActive: true,
+        }),
+      });
+
+      fireEvent.change(screen.getByRole("slider", { name: /seek/i }), {
+        target: { value: "2.5" },
+      });
+
+      expect(player.seek).toHaveBeenCalledWith(2.5);
+      expect(player.playNow).not.toHaveBeenCalled();
+    });
+
+    it("plays a finished call again from the point chosen", () => {
+      // Regression: the display keeps the last Call as currentCall after it
+      // ends. The row stayed "playing", took the click as a seek, and the
+      // player — no longer holding the Call — ignored it, leaving the
+      // waveform stuck at the end.
+      mockGetCallPeaksQuery.mockReturnValue({
+        data: { peaks: [0.5, 1, 0.25], duration: 10 },
+      });
+      renderPanel({
+        scanner: scannerState({
+          currentCall: playing,
+          isAudioActive: false,
+        }),
+      });
+
+      expect(screen.getByRole("button", { name: "Play call" })).toBeInTheDocument();
+      fireEvent.change(screen.getByRole("slider", { name: /seek/i }), {
+        target: { value: "6" },
+      });
+
+      expect(player.playNow).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 7 }),
+        expect.objectContaining({ startAt: 6 }),
+      );
+      expect(player.seek).not.toHaveBeenCalled();
     });
   });
 });

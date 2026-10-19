@@ -203,6 +203,18 @@ Each result offers **play**, **download**, and — when signed in — a star to
 bookmark it and a share mark. Results are paged; use **Prev** and **Next** at the
 top.
 
+Under each result is its waveform. Select a point on it, or drag along it, to
+hear the call from there; on a call that is not playing, that starts it. The
+call playing is marked, its waveform fills in as it plays, and its play button
+pauses and resumes it.
+
+**Autoplay**, beside the call count, keeps going when a call ends: the next call
+*forward in time* plays, moving onto the next page when it gets there. With
+**Newest first** that is the call above; switch **Sort** to **Oldest first** to
+hear an incident from the top down. It stops at the newest matching call, when
+you change the filters or the page yourself, or when you close search. While it
+runs, live calls wait their turn and play once it stops.
+
 ---
 
 ## Bookmarks

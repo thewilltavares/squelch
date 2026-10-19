@@ -3,6 +3,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   X,
   Play,
+  Pause,
   Download,
   Star,
   ChevronDown,
@@ -14,6 +15,9 @@ import {
 } from "lucide-react";
 import { useAppSelector, useAppDispatch } from "@/app/store";
 import { ShareCallButton } from "../components/ShareCallButton";
+import { CallWaveform } from "./CallWaveform";
+import { useSearchAutoplay } from "../hooks/useSearchAutoplay";
+import { togglePause } from "../scannerSlice";
 import {
   useSearchCallsQuery,
   type CallSearchParams,
@@ -38,7 +42,6 @@ import { useGetBookmarkIDsQuery, useToggleBookmarkMutation } from "@/app/api";
 import { selectToken } from "@/features/auth";
 import { audioPlayer } from "@/shared/services/audio/player";
 import { sanitizeDownloadFilename } from "@/shared/services/download/filename";
-import type { Call } from "../types";
 
 interface SearchPanelProps {
   isOpen: boolean;
@@ -172,6 +175,13 @@ export default function SearchPanel({ isOpen, onClose }: SearchPanelProps) {
   const filters = useAppSelector((s) => s.calls);
   const config = useAppSelector((s) => s.scanner.config);
   const token = useAppSelector(selectToken);
+  // currentCall outlives playback (the display keeps showing the last Call),
+  // so a row only counts as playing while audio is active. Otherwise a
+  // finished Call would still take seeks the player no longer holds.
+  const currentCallId = useAppSelector((s) =>
+    s.scanner.isAudioActive ? s.scanner.currentCall?.id : undefined,
+  );
+  const isPaused = useAppSelector((s) => s.scanner.isPaused);
   const isAuthenticated = !!token;
   const shareableLinks = config?.shareableLinks ?? false;
 
@@ -442,7 +452,7 @@ export default function SearchPanel({ isOpen, onClose }: SearchPanelProps) {
     skip: !isOpen,
   });
 
-  const calls = data?.calls ?? [];
+  const calls = useMemo(() => data?.calls ?? [], [data]);
   const total = data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / filters.limit));
 
@@ -456,7 +466,7 @@ export default function SearchPanel({ isOpen, onClose }: SearchPanelProps) {
     getScrollElement: () => parentRef.current,
     estimateSize: (index) => {
       const call = calls[index];
-      return call && expandedTranscripts.has(call.id) ? 120 : 62;
+      return call && expandedTranscripts.has(call.id) ? 166 : 108;
     },
     overscan: 5,
   });
@@ -476,35 +486,33 @@ export default function SearchPanel({ isOpen, onClose }: SearchPanelProps) {
     return count;
   }, [filters]);
 
-  const handleRowClick = useCallback(async (call: CallSearchResult) => {
-    const playCall: Call = {
-      id: call.id,
-      audioName: call.audioName || `call-${call.id}`,
-      audioType: call.audioType || "audio/mpeg",
-      dateTime: call.dateTime,
-      systemId: call.systemId,
-      system: call.systemId,
-      talkgroupId: call.talkgroupId,
-      talkgroup: call.talkgroupId,
-      frequency: call.frequency,
-      duration: call.duration,
-      source: call.source,
-      site: call.site,
-      channel: call.channel,
-      decoder: call.decoder,
-      errorCount: call.errorCount,
-      spikeCount: call.spikeCount,
-      talkerAlias: call.talkerAlias,
-      systemLabel: call.systemLabel,
-      talkgroupLabel: call.talkgroupLabel,
-      talkgroupName: call.talkgroupName,
-      talkgroupTag: call.talkgroupTag,
-      talkgroupGroup: call.talkgroupGroup,
-      transcript: call.transcript,
-    };
+  const autoplay = useSearchAutoplay({ isOpen, calls, queryParams });
+  const { play } = autoplay;
 
-    audioPlayer.playNow(playCall);
-  }, []);
+  // The current row's Play button pauses and resumes, the same toggle as
+  // the scanner's transport, which the full-screen panel covers.
+  const handleTogglePause = useCallback(() => {
+    dispatch(togglePause());
+    if (isPaused) audioPlayer.resume();
+    else audioPlayer.pause();
+  }, [dispatch, isPaused]);
+
+  const handleSeek = useCallback(
+    (call: CallSearchResult, seconds: number) => {
+      if (call.id === currentCallId) audioPlayer.seek(seconds);
+      else play(call, seconds);
+    },
+    [currentCallId, play],
+  );
+
+  // Keep the Call autoplay moved on to in view, including after it crosses
+  // to another page. Not for plays chosen by hand: the row is under the
+  // pointer already.
+  useEffect(() => {
+    if (!autoplay.enabled || currentCallId == null) return;
+    const index = calls.findIndex((c) => c.id === currentCallId);
+    if (index >= 0) virtualizer.scrollToIndex(index, { align: "auto" });
+  }, [autoplay.enabled, currentCallId, calls, virtualizer]);
 
   const [showFilters, setShowFilters] = useState(false);
 
@@ -869,11 +877,25 @@ export default function SearchPanel({ isOpen, onClose }: SearchPanelProps) {
                 <ChevronRight size={14} />
               </button>
             </div>
-            {total > 0 && (
-              <span className="text-xs text-base-content/40">
-                {total.toLocaleString()} calls
-              </span>
-            )}
+            <div className="flex items-center gap-3">
+              {total > 0 && (
+                <span className="text-xs text-base-content/40">
+                  {total.toLocaleString()} calls
+                </span>
+              )}
+              <label
+                className="flex cursor-pointer items-center gap-2"
+                title="When a call ends, play the next one forward in time"
+              >
+                <span className="text-xs text-base-content/60">Autoplay</span>
+                <input
+                  type="checkbox"
+                  className="toggle toggle-sm toggle-primary"
+                  checked={autoplay.enabled}
+                  onChange={(e) => autoplay.setEnabled(e.target.checked)}
+                />
+              </label>
+            </div>
           </div>
 
           {/* Results list */}
@@ -896,12 +918,18 @@ export default function SearchPanel({ isOpen, onClose }: SearchPanelProps) {
             >
               {virtualizer.getVirtualItems().map((virtualRow) => {
                 const call = calls[virtualRow.index];
+                const isCurrent = call.id === currentCallId;
                 return (
                   <div
                     key={call.id}
                     data-index={virtualRow.index}
                     ref={virtualizer.measureElement}
-                    className="absolute left-0 flex w-full items-start gap-2 border-b border-base-300 px-3 py-2 hover:bg-base-200 overflow-hidden"
+                    aria-current={isCurrent ? "true" : undefined}
+                    className={`absolute left-0 flex w-full items-start gap-2 border-b border-l-2 border-b-base-300 px-3 py-2 hover:bg-base-200 overflow-hidden ${
+                      isCurrent
+                        ? "border-l-primary bg-base-200"
+                        : "border-l-transparent"
+                    }`}
                     style={{ top: virtualRow.start }}
                   >
                     {/* Call details */}
@@ -966,6 +994,11 @@ export default function SearchPanel({ isOpen, onClose }: SearchPanelProps) {
                           {call.transcript}
                         </div>
                       )}
+                      <CallWaveform
+                        callId={call.id}
+                        isCurrent={isCurrent}
+                        onSeek={(seconds) => handleSeek(call, seconds)}
+                      />
                     </div>
                     {/* Date/time + action buttons */}
                     <div className="flex shrink-0 flex-col items-end gap-0.5">
@@ -978,13 +1011,27 @@ export default function SearchPanel({ isOpen, onClose }: SearchPanelProps) {
                         </span>
                       )}
                       <div className="flex items-center gap-0.5">
-                        <button
-                          onClick={() => void handleRowClick(call)}
-                          className="btn btn-ghost btn-xs btn-square"
-                          aria-label="Play call"
-                        >
-                          <Play className="w-3 h-3" />
-                        </button>
+                        {isCurrent ? (
+                          <button
+                            onClick={handleTogglePause}
+                            className="btn btn-ghost btn-xs btn-square text-primary"
+                            aria-label={isPaused ? "Resume call" : "Pause call"}
+                          >
+                            {isPaused ? (
+                              <Play className="w-3 h-3" />
+                            ) : (
+                              <Pause className="w-3 h-3" />
+                            )}
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => play(call)}
+                            className="btn btn-ghost btn-xs btn-square"
+                            aria-label="Play call"
+                          >
+                            <Play className="w-3 h-3" />
+                          </button>
+                        )}
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
