@@ -283,7 +283,8 @@ class AudioPlayer {
    * - If an ingested (live) call is playing, push it back to the front
    *   of the queue so it resumes after this on-demand call finishes.
    * - If another on-demand call is playing, discard it (don't re-queue).
-   * - Ingested calls in the queue are never touched.
+   * - Ingested calls in the queue are kept, except a live copy of this
+   *   same call: it is being heard now and would only play again later.
    *
    * `startAt` starts the call partway in; `onEnded` runs when it finishes
    * (see QueueItem).
@@ -303,15 +304,22 @@ class AudioPlayer {
       startAt: opts.startAt,
       onEnded: opts.onEnded,
     };
+
+    const queued = this.queue.length;
+    this.queue = this.queue.filter((q) => q.call.id !== call.id);
+    if (
+      this.currentItem &&
+      !this.currentItem.onDemand &&
+      this.currentItem.call.id !== call.id
+    ) {
+      // Currently playing an ingested call — push it back to front.
+      this.queue.unshift(this.currentItem);
+    }
+    if (this.queue.length !== queued) this.queueChangeCb?.(this.queue.length);
+
     if (!this.currentItem) {
       this.startPlayback(item);
       return;
-    }
-
-    if (!this.currentItem.onDemand) {
-      // Currently playing an ingested call — push it back to front.
-      this.queue.unshift(this.currentItem);
-      this.queueChangeCb?.(this.queue.length);
     }
 
     this.currentItem = null;
