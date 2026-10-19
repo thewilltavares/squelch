@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Search results have a waveform you can scrub.** Each result shows its
+  call's shape; select a point or drag along it to play from there, on the
+  call already playing or one that is not. Hovering shows the time a click
+  would jump to. The waveform is decoded in the
+  browser from the call's existing audio, so there is no new endpoint and
+  nothing stored. The call playing is marked in the list, and its play button
+  pauses and resumes it, since the search panel covers the scanner's own
+  controls.
+- **Autoplay in search.** A toggle beside the call count plays the next call
+  forward in time when one ends, across pages: up the list for Newest first,
+  down it for Oldest first. Calls that arrive while it plays are picked up
+  rather than skipped. It stops at the newest matching call, when the filters
+  or page change, when search closes, or after three calls in a row cannot be
+  played. Live calls wait in the queue while it runs, as they already do
+  behind a call played from search.
+
 ## [3.1.0] — 2026-09-29
 
 ### Added

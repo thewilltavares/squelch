@@ -1,5 +1,6 @@
 import { createSlice, type PayloadAction } from "@reduxjs/toolkit";
 import { api } from "@/app/api";
+import { decodePeaks, type CallPeaks } from "@/shared/services/audio/peaks";
 
 // --- RTK Query types ---
 
@@ -83,10 +84,38 @@ const callsApi = api.injectEndpoints({
       }),
       providesTags: [{ type: "Calls", id: "LIST" }],
     }),
+    /**
+     * Waveform peaks for one Call, decoded in the browser from its audio.
+     * Only the peaks are cached — the audio bytes are not serialisable
+     * state and are dropped once decoded. A Call's audio never changes,
+     * so the result is kept well past the default minute to make paging
+     * back and forth free.
+     */
+    getCallPeaks: builder.query<CallPeaks, number>({
+      async queryFn(id, _api, _extra, baseQuery) {
+        const result = await baseQuery({
+          url: `/calls/${id}/audio`,
+          responseHandler: (response) => response.arrayBuffer(),
+        });
+        if (result.error) return { error: result.error };
+        try {
+          return { data: await decodePeaks(result.data as ArrayBuffer) };
+        } catch (err) {
+          return {
+            error: {
+              status: "CUSTOM_ERROR",
+              error: err instanceof Error ? err.message : "decode failed",
+            },
+          };
+        }
+      },
+      keepUnusedDataFor: 600,
+    }),
   }),
 });
 
-export const { useSearchCallsQuery } = callsApi;
+export const { useSearchCallsQuery, useGetCallPeaksQuery } = callsApi;
+export { callsApi };
 
 // --- Search filter state slice ---
 
