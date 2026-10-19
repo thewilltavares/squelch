@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/revtex/squelch/internal/audio"
 	"github.com/revtex/squelch/internal/handler/shared"
 )
 
@@ -97,10 +98,9 @@ func (h *Handler) GetCallAudio(c *gin.Context) {
 		return
 	}
 
-	contentType := call.AudioType
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
+	// Calls stored as octet-stream are served by their file's extension
+	// instead (see audio.ResolveMIME).
+	contentType := audio.ResolveMIME(call.AudioType, relPath)
 	filename := call.AudioName
 	if filename == "" {
 		filename = "call"

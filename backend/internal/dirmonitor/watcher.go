@@ -666,7 +666,7 @@ func (s *Service) ingestCall(ctx context.Context, dw db.Dirmonitor, parsed *Pars
 	if convMode != audio.ConversionDisabled {
 		audioType = audio.OutputMIME(convPreset)
 	} else {
-		audioType = mimeFromExt(filepath.Ext(parsed.AudioFilePath))
+		audioType = audio.MIMEFromExt(filepath.Ext(parsed.AudioFilePath))
 	}
 
 	// ── Build nullable fields ───────────────────────────────────────────────
@@ -884,28 +884,6 @@ func (s *Service) ingestCall(ctx context.Context, dw db.Dirmonitor, parsed *Pars
 	}
 
 	return callID, nil
-}
-
-// mimeFromExt maps a file extension (including leading dot) to an audio MIME type.
-func mimeFromExt(ext string) string {
-	switch strings.ToLower(ext) {
-	case ".mp3":
-		return "audio/mpeg"
-	case ".wav":
-		return "audio/wav"
-	case ".m4a":
-		return "audio/mp4"
-	case ".aac":
-		return "audio/aac"
-	case ".ogg":
-		return "audio/ogg"
-	case ".flac":
-		return "audio/flac"
-	case ".opus":
-		return "audio/opus"
-	default:
-		return "application/octet-stream"
-	}
 }
 
 // isBlacklisted checks whether a talkgroup ID appears in the system's blacklist.

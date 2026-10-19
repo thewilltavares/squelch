@@ -538,3 +538,42 @@ func assertV1ErrorEnvelope(t *testing.T, body []byte) map[string]any {
 
 // silence unused-imports lint when test compilation skips a branch above
 var _ = sql.ErrNoRows
+
+// TestPostV1Calls_OctetStreamTypedFromExtension pins that the native upload,
+// like the legacy one, stores an octet-stream audio part with the type of
+// its file extension.
+func TestPostV1Calls_OctetStreamTypedFromExtension(t *testing.T) {
+	const apiKey = "v1-bearer-key"
+	engine, q := engineV1(t)
+	seedV1APIKey(t, q, apiKey)
+	seedV1Settings(t, q)
+
+	body, ct := buildV1Upload(t, map[string]string{
+		"systemId":    "1",
+		"talkgroupId": "100",
+		"startedAt":   time.Now().UTC().Format(time.RFC3339),
+	}, true)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/calls", body)
+	req.Header.Set("Content-Type", ct)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	call, err := q.GetCall(context.Background(), resp.ID)
+	if err != nil {
+		t.Fatalf("GetCall: %v", err)
+	}
+	if got, want := call.AudioType, "audio/wav"; got != want {
+		t.Errorf("stored AudioType = %q, want %q", got, want)
+	}
+}
