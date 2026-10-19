@@ -47,6 +47,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   used the browser's locale, so a server set to 24-hour still showed 12-hour
   times there (in en-US). They now use the server's setting, as the scanner
   display and recent calls already did.
+- **Search results no longer overlap after a refresh.** When a refresh
+  brought in new calls, the rows below them kept the heights of the calls
+  that used to be in their place, so results overlapped or left gaps, and
+  expanding a transcript on a row that had moved did not make room for it.
+  Row heights now follow each call.
 
 ## [3.1.0] — 2026-09-29
 

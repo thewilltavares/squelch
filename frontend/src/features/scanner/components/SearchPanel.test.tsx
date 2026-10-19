@@ -43,22 +43,34 @@ const player = vi.hoisted(() => ({
 
 vi.mock("@/shared/services/audio/player", () => ({ audioPlayer: player }));
 
+/** The options the panel last gave the virtualizer. */
+const virtualizerOptions = vi.hoisted(() => ({
+  current: null as null | { getItemKey?: (index: number) => unknown },
+}));
+
 vi.mock("@tanstack/react-virtual", () => ({
-  useVirtualizer: ({ count }: { count: number }) => ({
-    getVirtualItems: () =>
-      Array.from({ length: count }, (_, i) => ({
-        index: i,
+  useVirtualizer: (options: {
+    count: number;
+    getItemKey?: (index: number) => unknown;
+  }) => {
+    virtualizerOptions.current = options;
+    const { count } = options;
+    return {
+      getVirtualItems: () =>
+        Array.from({ length: count }, (_, i) => ({
+          index: i,
+          start: i * 44,
+          size: 44,
+          key: i,
+        })),
+      getTotalSize: () => count * 44,
+      measurementsCache: Array.from({ length: count }, (_, i) => ({
         start: i * 44,
-        size: 44,
-        key: i,
       })),
-    getTotalSize: () => count * 44,
-    measurementsCache: Array.from({ length: count }, (_, i) => ({
-      start: i * 44,
-    })),
-    measureElement: () => {},
-    scrollToIndex: () => {},
-  }),
+      measureElement: () => {},
+      scrollToIndex: () => {},
+    };
+  },
 }));
 
 // --- Helpers ---
@@ -467,6 +479,37 @@ describe("SearchPanel", () => {
   });
 
   describe("search results", () => {
+    it("keys row sizes by call, so they move with it on a refresh", () => {
+      // Regression: keyed by position, a refresh with new calls on top
+      // left each position with its old call's height (overlapping rows),
+      // and expanding a moved row's transcript was never re-measured.
+      const row = (id: number) => ({
+        id,
+        dateTime: 1700000000 + id,
+        frequency: 0,
+        duration: 5,
+        source: 0,
+        systemId: 100,
+        talkgroupId: 200,
+        systemLabel: "Sys1",
+        talkgroupLabel: "TG1",
+        talkgroupName: "Talkgroup One",
+        talkgroupTag: "",
+        talkgroupGroup: "",
+        talkgroupLed: "",
+        transcript: "",
+        bookmarked: false,
+      });
+      mockSearchCallsQuery.mockReturnValue({
+        data: { calls: [row(31), row(30)], total: 2 },
+        isFetching: false,
+      });
+      renderPanel({ scanner: scannerState() });
+
+      const key = virtualizerOptions.current?.getItemKey;
+      expect([key?.(0), key?.(1)]).toEqual([31, 30]);
+    });
+
     it("shows 'No results' when no calls returned", () => {
       mockSearchCallsQuery.mockReturnValue({
         data: { calls: [], total: 0 },

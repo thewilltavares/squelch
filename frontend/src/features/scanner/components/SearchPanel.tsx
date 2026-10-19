@@ -553,6 +553,12 @@ export default function SearchPanel({
   const virtualizer = useVirtualizer({
     count: calls.length,
     getScrollElement: () => parentRef.current,
+    // Sizes and resize observers follow the Call, not its position. By
+    // index, a refresh that puts new Calls above shifts the rest down
+    // while each position keeps its old Call's height (rows overlap or
+    // leave gaps), and the new row takes over an old row's observer, so
+    // expanding that row's transcript is never measured.
+    getItemKey: (index) => calls[index]?.id ?? index,
     estimateSize: (index) => {
       const call = calls[index];
       if (!call?.transcript) return 108;
