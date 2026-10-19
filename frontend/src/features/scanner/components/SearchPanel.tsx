@@ -45,9 +45,13 @@ interface SearchPanelProps {
   onClose: () => void;
 }
 
-function formatTime(unix: number): string {
+function formatTime(unix: number, hour12: boolean): string {
   const d = new Date(unix * 1000);
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return d.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12,
+  });
 }
 
 function formatDate(unix: number): string {
@@ -171,6 +175,8 @@ export default function SearchPanel({ isOpen, onClose }: SearchPanelProps) {
   const dispatch = useAppDispatch();
   const filters = useAppSelector((s) => s.calls);
   const config = useAppSelector((s) => s.scanner.config);
+  // The server's clock setting, as the scanner display uses it.
+  const hour12 = config?.time12hFormat ?? false;
   const token = useAppSelector(selectToken);
   const isAuthenticated = !!token;
   const shareableLinks = config?.shareableLinks ?? false;
@@ -970,7 +976,7 @@ export default function SearchPanel({ isOpen, onClose }: SearchPanelProps) {
                     {/* Date/time + action buttons */}
                     <div className="flex shrink-0 flex-col items-end gap-0.5">
                       <span className="text-[11px] text-base-content/60">
-                        {formatDate(call.dateTime)} {formatTime(call.dateTime)}
+                        {formatDate(call.dateTime)} {formatTime(call.dateTime, hour12)}
                       </span>
                       {call.duration > 0 && (
                         <span className="text-[11px] text-base-content/40">

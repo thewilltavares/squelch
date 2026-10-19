@@ -307,5 +307,50 @@ describe("SearchPanel", () => {
       expect(screen.getByText("TG1 - Talkgroup One")).toBeInTheDocument();
       expect(screen.getByText("Sys1")).toBeInTheDocument();
     });
+
+    it.each([
+      { time12hFormat: false, shown: false, hidden: true },
+      { time12hFormat: true, shown: true, hidden: false },
+    ])(
+      "shows call times in the server's clock format (12-hour: $time12hFormat)",
+      ({ time12hFormat, shown, hidden }) => {
+        // 13:05 local: the 12- and 24-hour forms differ in every locale.
+        const dateTime = new Date(2026, 9, 18, 13, 5).getTime() / 1000;
+        const timeIn = (hour12: boolean) =>
+          new Date(dateTime * 1000).toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12,
+          });
+        mockSearchCallsQuery.mockReturnValue({
+          data: {
+            calls: [
+              {
+                id: 1,
+                dateTime,
+                systemId: 100,
+                talkgroupId: 200,
+                systemLabel: "Sys1",
+                talkgroupLabel: "TG1",
+                talkgroupName: "Talkgroup One",
+                bookmarked: false,
+              },
+            ],
+            total: 1,
+          },
+          isFetching: false,
+        });
+        renderPanel({
+          scanner: scannerState({
+            config: { ...testConfig, time12hFormat },
+          }),
+        });
+        const row = screen.getByText("TG1 - Talkgroup One").closest(
+          "[data-index]",
+        ) as HTMLElement;
+        expect(row.textContent).toContain(timeIn(shown));
+        expect(row.textContent).not.toContain(timeIn(hidden));
+      },
+    );
   });
 });

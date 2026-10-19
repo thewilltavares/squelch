@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Search and Bookmarks follow the 12/24-hour setting.** Their call times
+  used the browser's locale, so a server set to 24-hour still showed 12-hour
+  times there (in en-US). They now use the server's setting, as the scanner
+  display and recent calls already did.
+
 ## [3.1.0] — 2026-09-29
 
 ### Added
