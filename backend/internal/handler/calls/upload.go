@@ -458,6 +458,9 @@ func (h *Handler) PostCallUpload(c *gin.Context) {
 	// preset (M4A for AAC presets, MP3 for MP3 presets).
 	// Otherwise validate the client-supplied Content-Type against an allowlist
 	// to prevent attacker-controlled MIME types from reaching the database.
+	// Anything else — commonly application/octet-stream, which is what
+	// trunk-recorder sends — is typed from the stored file's extension, so
+	// iOS Safari, which will not play octet-stream, can play the call.
 	var audioType string
 	if convMode != audio.ConversionDisabled {
 		audioType = audio.OutputMIME(convPreset)
@@ -468,7 +471,7 @@ func (h *Handler) PostCallUpload(c *gin.Context) {
 			"audio/x-m4a", "audio/opus":
 			audioType = fh.Header.Get("Content-Type")
 		default:
-			audioType = "application/octet-stream"
+			audioType = audio.MIMEFromExt(filepath.Ext(relPath))
 		}
 	}
 

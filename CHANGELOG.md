@@ -57,6 +57,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from search or bookmarks left that copy there, so the same call played a
   second time when the queue reached it. Playing a call now takes it out of
   the queue.
+- **Calls play on iPhone.** An uploader that sends its audio as
+  `application/octet-stream` (trunk-recorder's rdioscanner uploader does)
+  left every call stored and served with that type, which iOS Safari
+  refuses to play, so nothing played on an iPhone while Chrome on Android
+  and desktop sniffed the bytes and played them. Uploads with audio
+  conversion off now take the type from the stored file's extension, and
+  calls already stored as octet-stream are served by their extension, so
+  they play too with no migration. Shared links are served the same way.
 
 ## [3.1.0] — 2026-09-29
 

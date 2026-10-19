@@ -456,3 +456,80 @@ func mapKeys(m map[string]any) []string {
 	}
 	return out
 }
+
+// TestPostCallUpload_OctetStreamTypedFromExtension pins that an audio part
+// sent as application/octet-stream — as trunk-recorder's rdioscanner
+// uploader sends it — is stored with the type of its file extension, not as
+// octet-stream, which iOS Safari will not play.
+func TestPostCallUpload_OctetStreamTypedFromExtension(t *testing.T) {
+	engine, queries, _ := engineWithCalls(t)
+	seedAPIKey(t, queries, "tr-key")
+	enableAutoPopulate(t, queries)
+
+	// buildUpload's CreateFormFile labels the part application/octet-stream.
+	body, ct := buildUpload(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/call-upload", body)
+	req.Header.Set("Content-Type", ct)
+	req.Header.Set("X-API-Key", "tr-key")
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	call, err := queries.GetCall(context.Background(), resp.ID)
+	if err != nil {
+		t.Fatalf("GetCall: %v", err)
+	}
+	if got, want := call.AudioType, "audio/wav"; got != want {
+		t.Errorf("stored AudioType = %q, want %q", got, want)
+	}
+}
+
+// TestGetCallAudio_OctetStreamServedByExtension pins that a call already
+// stored as application/octet-stream is served with the type of its file
+// extension, so existing calls play on iOS Safari without a data migration.
+func TestGetCallAudio_OctetStreamServedByExtension(t *testing.T) {
+	engine, queries, recordingsDir := engineWithCalls(t)
+	ctx := context.Background()
+	_ = queries.UpsertSetting(ctx, db.UpsertSettingParams{Key: "publicAccess", Value: "true"})
+
+	relPath := filepath.Join("2026", "call.m4a")
+	abs := filepath.Join(recordingsDir, relPath)
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(abs, []byte("FAKE_M4A"), 0o644); err != nil {
+		t.Fatalf("write audio: %v", err)
+	}
+	sysID, err := queries.CreateSystem(ctx, db.CreateSystemParams{SystemID: 1, Label: "S"})
+	if err != nil {
+		t.Fatalf("CreateSystem: %v", err)
+	}
+	callID, err := queries.CreateCall(ctx, db.CreateCallParams{
+		AudioPath: relPath, AudioName: "call.m4a", AudioType: "application/octet-stream",
+		DateTime: time.Now().Unix(), SystemID: sysID,
+	})
+	if err != nil {
+		t.Fatalf("CreateCall: %v", err)
+	}
+
+	for _, path := range []string{"/api/calls/%d/audio", "/api/v1/calls/%d/audio"} {
+		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf(path, callID), nil)
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d, want 200; body: %s", path, w.Code, w.Body.String())
+		}
+		if got, want := w.Header().Get("Content-Type"), "audio/mp4"; got != want {
+			t.Errorf("%s: Content-Type = %q, want %q", path, got, want)
+		}
+	}
+}

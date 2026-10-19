@@ -445,10 +445,9 @@ func (h *Handler) GetSharedCallAudio(c *gin.Context) {
 		return
 	}
 
-	contentType := sl.AudioType
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
+	// Calls stored as octet-stream are served by their file's extension
+	// instead (see audio.ResolveMIME).
+	contentType := audio.ResolveMIME(sl.AudioType, relPath)
 	filename := sl.AudioName
 	if filename == "" {
 		filename = filepath.Base(sl.AudioPath)

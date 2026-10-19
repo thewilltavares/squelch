@@ -493,35 +493,6 @@ func TestHandleFile_Integration_AutoPopulate(t *testing.T) {
 	}
 }
 
-// ── mimeFromExt ───────────────────────────────────────────────────────────────
-
-func TestMimeFromExt(t *testing.T) {
-	cases := []struct {
-		ext  string
-		want string
-	}{
-		{".mp3", "audio/mpeg"},
-		{".MP3", "audio/mpeg"},
-		{".wav", "audio/wav"},
-		{".m4a", "audio/mp4"},
-		{".aac", "audio/aac"},
-		{".ogg", "audio/ogg"},
-		{".flac", "audio/flac"},
-		{".opus", "audio/opus"},
-		{".xyz", "application/octet-stream"},
-		{"", "application/octet-stream"},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.ext, func(t *testing.T) {
-			got := mimeFromExt(tc.ext)
-			if got != tc.want {
-				t.Errorf("mimeFromExt(%q) = %q, want %q", tc.ext, got, tc.want)
-			}
-		})
-	}
-}
-
 // ── Symlink path-traversal ────────────────────────────────────────────────────
 
 func TestHandleFile_Symlink_Escaping_Rejected(t *testing.T) {

@@ -434,7 +434,8 @@ func (h *Handler) PostCallUploadV1(c *gin.Context) {
 			"audio/x-m4a", "audio/opus":
 			audioType = fh.Header.Get("Content-Type")
 		default:
-			audioType = "application/octet-stream"
+			// Typed from the stored file, as in the legacy upload handler.
+			audioType = audio.MIMEFromExt(filepath.Ext(relPath))
 		}
 	}
 
