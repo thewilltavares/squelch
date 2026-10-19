@@ -13,12 +13,13 @@ interface BookmarksPanelProps {
   onClose: () => void;
 }
 
-function formatDate(unix: number): string {
+function formatDate(unix: number, hour12: boolean): string {
   return new Date(unix * 1000).toLocaleString(undefined, {
     month: "short",
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
+    hour12,
   });
 }
 
@@ -78,6 +79,10 @@ export default function BookmarksPanel({
   const token = useAppSelector(selectToken);
   const shareableLinks = useAppSelector(
     (s) => s.scanner.config?.shareableLinks ?? false,
+  );
+  // The server's clock setting, as the scanner display uses it.
+  const hour12 = useAppSelector(
+    (s) => s.scanner.config?.time12hFormat ?? false,
   );
 
   const { data: bookmarkData, isLoading } = useGetBookmarkCallsQuery(
@@ -214,7 +219,7 @@ export default function BookmarksPanel({
               {/* Date/time + action buttons */}
               <div className="flex shrink-0 flex-col items-end gap-0.5">
                 <span className="text-[11px] text-base-content/60">
-                  {formatDate(call.dateTime)}
+                  {formatDate(call.dateTime, hour12)}
                 </span>
                 <div className="flex items-center gap-0.5">
                   <button
