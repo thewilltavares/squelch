@@ -549,7 +549,9 @@ export default function SearchPanel({
     getScrollElement: () => parentRef.current,
     estimateSize: (index) => {
       const call = calls[index];
-      return call && expandedTranscripts.has(call.id) ? 166 : 108;
+      if (!call?.transcript) return 108;
+      // The fold-down's toggle line, and the transcript when it is open.
+      return expandedTranscripts.has(call.id) ? 166 : 124;
     },
     overscan: 5,
   });
