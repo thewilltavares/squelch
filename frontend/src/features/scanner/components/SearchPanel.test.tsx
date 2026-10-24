@@ -43,22 +43,36 @@ const player = vi.hoisted(() => ({
 
 vi.mock("@/shared/services/audio/player", () => ({ audioPlayer: player }));
 
+/** The row-height estimate from the panel's latest render. */
+const virtualizer = vi.hoisted(() => ({
+  estimateSize: (_index: number): number => 0,
+}));
+
 vi.mock("@tanstack/react-virtual", () => ({
-  useVirtualizer: ({ count }: { count: number }) => ({
-    getVirtualItems: () =>
-      Array.from({ length: count }, (_, i) => ({
-        index: i,
+  useVirtualizer: ({
+    count,
+    estimateSize,
+  }: {
+    count: number;
+    estimateSize: (index: number) => number;
+  }) => {
+    virtualizer.estimateSize = estimateSize;
+    return {
+      getVirtualItems: () =>
+        Array.from({ length: count }, (_, i) => ({
+          index: i,
+          start: i * 44,
+          size: 44,
+          key: i,
+        })),
+      getTotalSize: () => count * 44,
+      measurementsCache: Array.from({ length: count }, (_, i) => ({
         start: i * 44,
-        size: 44,
-        key: i,
       })),
-    getTotalSize: () => count * 44,
-    measurementsCache: Array.from({ length: count }, (_, i) => ({
-      start: i * 44,
-    })),
-    measureElement: () => {},
-    scrollToIndex: () => {},
-  }),
+      measureElement: () => {},
+      scrollToIndex: () => {},
+    };
+  },
 }));
 
 // --- Helpers ---
@@ -178,12 +192,17 @@ function renderPanel(
   return { ...result, store, onClose };
 }
 
+/** Turn the Waveform switch on before rendering, as a returning user would. */
+function showWaveforms() {
+  localStorage.setItem("squelch-search-waveform", "true");
+}
+
 // --- Tests ---
 
 describe("SearchPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // Autoplay and Auto-refresh are remembered between visits.
+    // Autoplay, Auto-refresh and Waveform are remembered between visits.
     localStorage.clear();
     mockSearchCallsQuery.mockReturnValue({
       data: { calls: [], total: 0 },
@@ -555,6 +574,39 @@ describe("SearchPanel", () => {
       expect(toggle).toBeChecked();
     });
 
+    describe("waveform", () => {
+      const toggle = () => screen.getByRole("checkbox", { name: /waveform/i });
+
+      it("is off to begin with, and fetches no waveforms", () => {
+        renderPanel({ scanner: scannerState() });
+
+        expect(toggle()).not.toBeChecked();
+        expect(screen.queryByRole("slider", { name: /seek/i })).toBeNull();
+        expect(mockGetCallPeaksQuery).not.toHaveBeenCalled();
+      });
+
+      it("shows each result's waveform once on, and is remembered", () => {
+        const { unmount } = renderPanel({ scanner: scannerState() });
+        fireEvent.click(toggle());
+        expect(screen.getByRole("slider", { name: /seek/i })).toBeInTheDocument();
+        unmount();
+
+        renderPanel({ scanner: scannerState() });
+
+        expect(toggle()).toBeChecked();
+        expect(screen.getByRole("slider", { name: /seek/i })).toBeInTheDocument();
+      });
+
+      it("counts the waveform in a row's estimated height", () => {
+        renderPanel({ scanner: scannerState() });
+        expect(virtualizer.estimateSize(0)).toBe(62);
+
+        fireEvent.click(toggle());
+
+        expect(virtualizer.estimateSize(0)).toBe(108);
+      });
+    });
+
     it("plays a call from its row", () => {
       renderPanel({ scanner: scannerState() });
       fireEvent.click(screen.getByRole("button", { name: "Play call" }));
@@ -582,6 +634,7 @@ describe("SearchPanel", () => {
     });
 
     it("starts a call that is not playing from the point chosen on its waveform", () => {
+      showWaveforms();
       mockGetCallPeaksQuery.mockReturnValue({
         data: { peaks: [0.5, 1, 0.25], duration: 10 },
       });
@@ -599,6 +652,7 @@ describe("SearchPanel", () => {
     });
 
     it("seeks within the call that is already playing", () => {
+      showWaveforms();
       mockGetCallPeaksQuery.mockReturnValue({
         data: { peaks: [0.5, 1, 0.25], duration: 10 },
       });
@@ -622,6 +676,7 @@ describe("SearchPanel", () => {
       // ends. The row stayed "playing", took the click as a seek, and the
       // player — no longer holding the Call — ignored it, leaving the
       // waveform stuck at the end.
+      showWaveforms();
       mockGetCallPeaksQuery.mockReturnValue({
         data: { peaks: [0.5, 1, 0.25], duration: 10 },
       });
@@ -806,6 +861,7 @@ describe("SearchPanel", () => {
         });
 
         it("skips with the arrows after a waveform click, not seeks", () => {
+          showWaveforms();
           mockGetCallPeaksQuery.mockReturnValue({
             data: { peaks: [0.5, 1, 0.25], duration: 10 },
           });

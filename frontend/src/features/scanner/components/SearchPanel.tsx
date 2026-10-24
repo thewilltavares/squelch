@@ -73,6 +73,12 @@ const AUTO_REFRESH_DELAY_MS = 1000;
 /** Remembers the Auto-refresh switch in this browser. */
 const AUTO_REFRESH_STORAGE_KEY = "squelch-search-auto-refresh";
 
+/** Remembers the Waveform switch in this browser. */
+const WAVEFORM_STORAGE_KEY = "squelch-search-waveform";
+
+/** Height a result's waveform adds to its row: h-10 plus mt-1. */
+const WAVEFORM_ROW_HEIGHT = 46;
+
 function formatTime(unix: number): string {
   const d = new Date(unix * 1000);
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -543,15 +549,26 @@ export default function SearchPanel({
     () => new Set<number>(),
   );
 
+  // Off to begin with. Each waveform downloads and decodes its Call's
+  // audio, so hiding them also skips that for every row on screen.
+  const [showWaveform, setShowWaveformState] = useState(
+    () => readStored(localStorage, WAVEFORM_STORAGE_KEY) === "true",
+  );
+  const setShowWaveform = (on: boolean) => {
+    setShowWaveformState(on);
+    writeStored(localStorage, WAVEFORM_STORAGE_KEY, String(on));
+  };
+
   // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
     count: calls.length,
     getScrollElement: () => parentRef.current,
     estimateSize: (index) => {
       const call = calls[index];
-      if (!call?.transcript) return 108;
+      const waveform = showWaveform ? WAVEFORM_ROW_HEIGHT : 0;
+      if (!call?.transcript) return 62 + waveform;
       // The fold-down's toggle line, and the transcript when it is open.
-      return expandedTranscripts.has(call.id) ? 166 : 124;
+      return (expandedTranscripts.has(call.id) ? 120 : 78) + waveform;
     },
     overscan: 5,
   });
@@ -1202,6 +1219,18 @@ export default function SearchPanel({
                 <div className="flex flex-col items-end gap-1 @2xl:flex-row @2xl:items-center @2xl:gap-3">
                   <label
                     className="flex cursor-pointer items-center gap-2"
+                    title="Show each call's waveform, to play it from any point"
+                  >
+                    <span className="text-xs text-base-content/60">Waveform</span>
+                    <input
+                      type="checkbox"
+                      className="toggle toggle-sm toggle-primary"
+                      checked={showWaveform}
+                      onChange={(e) => setShowWaveform(e.target.checked)}
+                    />
+                  </label>
+                  <label
+                    className="flex cursor-pointer items-center gap-2"
                     title={
                       autoRefresh && !refreshable
                         ? "Waiting: past page 1 of Newest first, each new call would shift every row"
@@ -1372,11 +1401,13 @@ export default function SearchPanel({
                           {call.transcript}
                         </div>
                       )}
-                      <CallWaveform
-                        callId={call.id}
-                        isCurrent={isCurrent}
-                        onSeek={(seconds) => handleSeek(call, seconds)}
-                      />
+                      {showWaveform && (
+                        <CallWaveform
+                          callId={call.id}
+                          isCurrent={isCurrent}
+                          onSeek={(seconds) => handleSeek(call, seconds)}
+                        />
+                      )}
                     </div>
                     {/* Date/time + action buttons */}
                     <div className="flex shrink-0 flex-col items-end gap-0.5">

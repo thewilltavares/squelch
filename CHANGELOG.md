@@ -36,10 +36,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   again as new calls are recorded. Rows being read stay where they are as
   new ones arrive above them. Past page 1 of Newest first it waits, since
   each new call there would shift every row.
+- **Waveforms in search are a switch, off to begin with.** A Waveform toggle
+  beside Auto-refresh shows them. Each one downloads and decodes its call's
+  audio, so with it off a page of results costs no audio until a call plays.
 - **Search a call's talkgroup in one click.** A button beside each result's
   talkgroup narrows the search to it, and back. The live scanner's talkgroup
   selection is not affected.
-- **Search remembers Autoplay and Auto-refresh** in the browser.
+- **Search remembers Autoplay, Auto-refresh and Waveform** in the browser.
 
 ## [3.1.0] — 2026-09-29
 

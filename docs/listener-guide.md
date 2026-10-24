@@ -203,10 +203,12 @@ Each result offers **play**, **download**, and — when signed in — a star to
 bookmark it and a share mark. Results are paged; use **Prev** and **Next** at the
 top.
 
-Under each result is its waveform. Select a point on it, or drag along it, to
-hear the call from there; on a call that is not playing, that starts it. The
-call playing is marked, its waveform fills in as it plays, and its play button
-pauses and resumes it.
+Turn on **Waveform**, beside the call count, to show each result's waveform.
+Select a point on it, or drag along it, to hear the call from there; on a call
+that is not playing, that starts it. The call playing is marked, its waveform
+fills in as it plays, and its play button pauses and resumes it. Waveforms are
+off to begin with, since each one downloads its call's audio, and search
+remembers the setting.
 
 **Autoplay**, beside the call count, keeps going when a call ends: the next call
 *forward in time* plays, moving onto the next page when it gets there. With
