@@ -96,6 +96,9 @@ export function useSearchAutoplay({
   // The last result started here. A live Call that plays after it is not
   // in the list, so skipping goes on from this one.
   const [lastPlayed, setLastPlayed] = useState<number>();
+  // The Call Stop ended. The display keeps it as the last Call heard, and
+  // the transport must not take its place from there.
+  const [stopped, setStopped] = useState<number>();
 
   // The continuation runs long after the render that started the Call, so
   // it reads the latest list and settings from here.
@@ -237,6 +240,40 @@ export function useSearchAutoplay({
         failures.current = 0;
         advance(id, dir, () => latest.current.isOpen);
       },
+      /**
+       * End the result playing, or paused, for good: autoplay does not go
+       * on from it, the live Calls that queued behind it play, and the
+       * place is forgotten, so the next Play starts at the top of the list.
+       *
+       * The list moves to its newest page, fetched again: the live Calls
+       * playing now are there, and a copy cached from before the catch-up
+       * would not have them.
+       */
+      stop() {
+        failures.current = 0;
+        // Read before stopping: a queued live Call replaces it at once.
+        setStopped(store.getState().scanner.currentCall?.id);
+        setLastPlayed(undefined);
+        audioPlayer.stop();
+        if (store.getState().scanner.isPaused) dispatch(setPaused(false));
+
+        const { queryParams } = latest.current;
+        const page = pageOf(queryParams);
+        if (stepOf(queryParams) < 0) {
+          // Newest first: page 1.
+          void fetchPage({ ...queryParams, page: 1 }, true);
+          if (page !== 1) dispatch(setPage(1));
+          return;
+        }
+        // Oldest first: the last page, which the Calls since may have moved.
+        void fetchPage(queryParams, true).then(({ data }) => {
+          if (!data || pageOf(latest.current.queryParams) !== page) return;
+          const last = lastPage(data, queryParams);
+          if (last === page) return;
+          void fetchPage({ ...queryParams, page: last }, true);
+          dispatch(setPage(last));
+        });
+      },
     };
   }, [dispatch, store, setEnabled]);
 
@@ -244,7 +281,9 @@ export function useSearchAutoplay({
     enabled,
     setEnabled,
     lastPlayed,
+    stopped,
     play: engine.play,
     skip: engine.skip,
+    stop: engine.stop,
   };
 }

@@ -23,6 +23,7 @@ import {
   SkipBack,
   SkipForward,
   SlidersHorizontal,
+  Square,
 } from "lucide-react";
 import { useAppSelector, useAppDispatch } from "@/app/store";
 import { ShareCallButton } from "../components/ShareCallButton";
@@ -72,6 +73,12 @@ const AUTO_REFRESH_DELAY_MS = 1000;
 
 /** Remembers the Auto-refresh switch in this browser. */
 const AUTO_REFRESH_STORAGE_KEY = "squelch-search-auto-refresh";
+
+/** Remembers the Waveform switch in this browser. */
+const WAVEFORM_STORAGE_KEY = "squelch-search-waveform";
+
+/** Height a result's waveform adds to its row: h-10 plus mt-1. */
+const WAVEFORM_ROW_HEIGHT = 46;
 
 function formatTime(unix: number, hour12: boolean): string {
   const d = new Date(unix * 1000);
@@ -532,10 +539,8 @@ export default function SearchPanel({
     return params;
   }, [filters]);
 
-  const { data, currentData, isFetching, refetch } = useSearchCallsQuery(
-    queryParams,
-    { skip: !isOpen },
-  );
+  const { data, currentData, isFetching, refetch, fulfilledTimeStamp } =
+    useSearchCallsQuery(queryParams, { skip: !isOpen });
   // The overlay is for a list still to come: new filters or a page not yet
   // loaded. A refresh of the list on screen (auto-refresh, autoplay warming
   // a page crossing, the Refresh button) keeps it in view and quiet.
@@ -549,6 +554,16 @@ export default function SearchPanel({
     () => new Set<number>(),
   );
 
+  // Off to begin with. Each waveform downloads and decodes its Call's
+  // audio, so hiding them also skips that for every row on screen.
+  const [showWaveform, setShowWaveformState] = useState(
+    () => readStored(localStorage, WAVEFORM_STORAGE_KEY) === "true",
+  );
+  const setShowWaveform = (on: boolean) => {
+    setShowWaveformState(on);
+    writeStored(localStorage, WAVEFORM_STORAGE_KEY, String(on));
+  };
+
   // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
     count: calls.length,
@@ -561,9 +576,10 @@ export default function SearchPanel({
     getItemKey: (index) => calls[index]?.id ?? index,
     estimateSize: (index) => {
       const call = calls[index];
-      if (!call?.transcript) return 108;
+      const waveform = showWaveform ? WAVEFORM_ROW_HEIGHT : 0;
+      if (!call?.transcript) return 62 + waveform;
       // The fold-down's toggle line, and the transcript when it is open.
-      return expandedTranscripts.has(call.id) ? 166 : 124;
+      return (expandedTranscripts.has(call.id) ? 120 : 78) + waveform;
     },
     overscan: 5,
   });
@@ -618,8 +634,10 @@ export default function SearchPanel({
   // Newest first, down it for Oldest first, across pages either way.
   // They skip from the last result played here, playing or not, so they
   // still work after it ends with autoplay off, or while a live Call that
-  // queued behind it plays. Otherwise from the last Call heard at all.
-  const anchorId = autoplay.lastPlayed ?? lastCallId;
+  // queued behind it plays. Otherwise from the last Call heard at all,
+  // unless Stop ended it: Stop forgets the place.
+  const heardId = lastCallId === autoplay.stopped ? undefined : lastCallId;
+  const anchorId = autoplay.lastPlayed ?? heardId;
   const lastIndex = calls.findIndex((c) => c.id === anchorId);
   const listStep = filters.sort === "asc" ? 1 : -1;
   const canSkip = (dir: 1 | -1) => {
@@ -647,6 +665,13 @@ export default function SearchPanel({
     followCurrent.current = true;
   };
   const transportPlaying = currentCallId != null && !isPaused;
+  // Stop ends a result, playing or paused, and hands over to the live
+  // Calls waiting behind it. A live Call is the scanner's to stop.
+  const canStop = currentCallId != null && !playingLive;
+  const handleStop = () => {
+    followCurrent.current = false;
+    autoplay.stop();
+  };
 
   // A live Call is in no row, so without a word here it plays from
   // nowhere: one that queued behind a search Call, or the server stream
@@ -744,6 +769,28 @@ export default function SearchPanel({
       clearTimeout(timer);
     };
   }, [dispatch, isOpen, autoRefresh, refreshable, refetch]);
+
+  // A page cached from earlier comes back into view without the Calls that
+  // arrived while it was away: while a page past 1 of Newest first waited,
+  // or with search closed. Fetch it again if any did. The arrivals are
+  // noted whenever auto-refresh is on, whatever is on screen.
+  const lastArrival = useRef(0);
+  useEffect(() => {
+    if (!autoRefresh) return;
+    return dispatch(
+      addListener({
+        actionCreator: callReceived,
+        effect: () => {
+          lastArrival.current = Date.now();
+        },
+      }),
+    );
+  }, [dispatch, autoRefresh]);
+  useEffect(() => {
+    if (!isOpen || !autoRefresh || !refreshable) return;
+    if (fulfilledTimeStamp == null) return;
+    if (fulfilledTimeStamp < lastArrival.current) void refetch();
+  }, [isOpen, autoRefresh, refreshable, fulfilledTimeStamp, refetch]);
 
   // Rows that arrive above the ones being read push them down. Unless the
   // list is at the top, where new rows are the point, scroll by as much so
@@ -1160,6 +1207,15 @@ export default function SearchPanel({
                 </button>
                 <button
                   className="btn btn-ghost btn-sm btn-circle"
+                  disabled={!canStop}
+                  onClick={handleStop}
+                  aria-label="Stop"
+                  title="Stop, and go on to the live calls waiting"
+                >
+                  <Square size={14} />
+                </button>
+                <button
+                  className="btn btn-ghost btn-sm btn-circle"
                   disabled={!canSkip(1)}
                   onClick={() => handleSkip(1)}
                   aria-label="Next call"
@@ -1212,6 +1268,18 @@ export default function SearchPanel({
                 )}
                 {/* Stacked where the bar is narrow, side by side otherwise. */}
                 <div className="flex flex-col items-end gap-1 @2xl:flex-row @2xl:items-center @2xl:gap-3">
+                  <label
+                    className="flex cursor-pointer items-center gap-2"
+                    title="Show each call's waveform, to play it from any point"
+                  >
+                    <span className="text-xs text-base-content/60">Waveform</span>
+                    <input
+                      type="checkbox"
+                      className="toggle toggle-sm toggle-primary"
+                      checked={showWaveform}
+                      onChange={(e) => setShowWaveform(e.target.checked)}
+                    />
+                  </label>
                   <label
                     className="flex cursor-pointer items-center gap-2"
                     title={
@@ -1384,11 +1452,13 @@ export default function SearchPanel({
                           {call.transcript}
                         </div>
                       )}
-                      <CallWaveform
-                        callId={call.id}
-                        isCurrent={isCurrent}
-                        onSeek={(seconds) => handleSeek(call, seconds)}
-                      />
+                      {showWaveform && (
+                        <CallWaveform
+                          callId={call.id}
+                          isCurrent={isCurrent}
+                          onSeek={(seconds) => handleSeek(call, seconds)}
+                        />
+                      )}
                     </div>
                     {/* Date/time + action buttons */}
                     <div className="flex shrink-0 flex-col items-end gap-0.5">

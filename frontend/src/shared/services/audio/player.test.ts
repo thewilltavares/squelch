@@ -643,6 +643,71 @@ describe("audioPlayer", () => {
     expect(player.getCurrentCall()?.id).toBe(2);
   });
 
+  it("stops an on-demand call without its continuation, and plays the queue", async () => {
+    // Search's Stop: done catching up, so the next result must not start,
+    // and the live calls that waited behind it play.
+    const player = await loadPlayer();
+    const onEnded = vi.fn();
+    player.playNow(makeCall(1), { onEnded });
+    player.enqueue(makeCall(2));
+    player.enqueue(makeCall(3));
+    await Promise.resolve();
+
+    player.stop();
+    await Promise.resolve();
+
+    expect(onEnded).not.toHaveBeenCalled();
+    expect(player.getCurrentCall()?.id).toBe(2);
+    expect(lastElement().src).toContain("/api/v1/calls/2/audio");
+    lastElement().emit("ended");
+    await Promise.resolve();
+    expect(player.getCurrentCall()?.id).toBe(3);
+  });
+
+  it("plays the queue after stopping a paused on-demand call", async () => {
+    // Live calls queue while paused; stopping must not leave them held.
+    const player = await loadPlayer();
+    player.playNow(makeCall(1));
+    await Promise.resolve();
+    player.pause();
+    player.enqueue(makeCall(2));
+
+    player.stop();
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+
+    expect(player.getCurrentCall()?.id).toBe(2);
+    expect(lastElement().paused).toBe(false);
+    expect(player.isPlaying()).toBe(true);
+  });
+
+  it("leaves a live call alone on stop", async () => {
+    const player = await loadPlayer();
+    player.enqueue(makeCall(1));
+    await Promise.resolve();
+
+    player.stop();
+
+    expect(player.getCurrentCall()?.id).toBe(1);
+    expect(player.isPlaying()).toBe(true);
+  });
+
+  it("gives playback back to the stream when stopping with nothing queued", async () => {
+    const player = await loadPlayer();
+    const mod = await import("./streamPlayer");
+    const resume = vi.spyOn(mod.streamPlayer, "resume");
+    const pause = vi.spyOn(mod.streamPlayer, "pause");
+    player.setSuspended(true);
+    player.playNow(makeCall(1));
+    await Promise.resolve();
+
+    player.stop();
+
+    expect(player.getCurrentCall()).toBeNull();
+    expect(resume).toHaveBeenCalled();
+    pause.mockRestore();
+    resume.mockRestore();
+  });
+
   it("tells the call-start listener whether each call is live", async () => {
     // The search panel says so when a queued live call plays: it is in no
     // row there, so otherwise it plays from nowhere.

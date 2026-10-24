@@ -335,6 +335,25 @@ class AudioPlayer {
     this.playNext();
   }
 
+  /**
+   * End the on-demand call playing, playing or paused, without running
+   * its continuation, and go on to the live calls that queued behind it.
+   * A pause belonged to the call stopped, so it is cleared: otherwise the
+   * queue would stay held. A live call playing is left alone.
+   */
+  stop(): void {
+    if (!this.currentItem?.onDemand) return;
+    this.currentItem = null;
+    this._playing = false;
+    this._paused = false;
+    this.stopAudio();
+    this.playNext();
+    if (!this.currentItem) {
+      this.updateMediaSession(null);
+      this.releaseStream();
+    }
+  }
+
   replay(): void {
     if (this.currentItem && this.audio) {
       try {

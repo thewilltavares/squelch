@@ -39,6 +39,7 @@ const player = vi.hoisted(() => ({
   pause: vi.fn(),
   resume: vi.fn(),
   seek: vi.fn(),
+  stop: vi.fn(),
 }));
 
 vi.mock("@/shared/services/audio/player", () => ({ audioPlayer: player }));
@@ -48,12 +49,19 @@ const virtualizerOptions = vi.hoisted(() => ({
   current: null as null | { getItemKey?: (index: number) => unknown },
 }));
 
+/** The row-height estimate from the panel's latest render. */
+const virtualizer = vi.hoisted(() => ({
+  estimateSize: (_index: number): number => 0,
+}));
+
 vi.mock("@tanstack/react-virtual", () => ({
   useVirtualizer: (options: {
     count: number;
     getItemKey?: (index: number) => unknown;
+    estimateSize: (index: number) => number;
   }) => {
     virtualizerOptions.current = options;
+    virtualizer.estimateSize = options.estimateSize;
     const { count } = options;
     return {
       getVirtualItems: () =>
@@ -190,12 +198,17 @@ function renderPanel(
   return { ...result, store, onClose };
 }
 
+/** Turn the Waveform switch on before rendering, as a returning user would. */
+function showWaveforms() {
+  localStorage.setItem("squelch-search-waveform", "true");
+}
+
 // --- Tests ---
 
 describe("SearchPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // Autoplay and Auto-refresh are remembered between visits.
+    // Autoplay, Auto-refresh and Waveform are remembered between visits.
     localStorage.clear();
     mockSearchCallsQuery.mockReturnValue({
       data: { calls: [], total: 0 },
@@ -393,6 +406,31 @@ describe("SearchPanel", () => {
         "title",
         expect.stringMatching(/each new call would shift/i),
       );
+    });
+
+    it("fetches page 1 again on return when calls arrived while it waited", () => {
+      // Regression: page 1 came back from the cache without the calls that
+      // arrived meanwhile, so a live call playing from them was in no row.
+      mockSearchCallsQuery.mockReturnValue({
+        data: { calls: [], total: 50 },
+        currentData: { calls: [], total: 50 },
+        isFetching: false,
+        refetch,
+        fulfilledTimeStamp: 1,
+      });
+      const { store } = renderPanel({ scanner: scannerState() });
+      fireEvent.click(toggle());
+      expect(refetch).not.toHaveBeenCalled(); // nothing missed yet
+      fireEvent.click(screen.getByText("Next"));
+      act(() => {
+        store.dispatch(callReceived(arrived));
+        vi.runAllTimers();
+      });
+      expect(refetch).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByText("Prev"));
+
+      expect(refetch).toHaveBeenCalledTimes(1);
     });
 
     it("refreshes any page of Oldest first, which new calls only add to", () => {
@@ -643,6 +681,39 @@ describe("SearchPanel", () => {
       expect(toggle).toBeChecked();
     });
 
+    describe("waveform", () => {
+      const toggle = () => screen.getByRole("checkbox", { name: /waveform/i });
+
+      it("is off to begin with, and fetches no waveforms", () => {
+        renderPanel({ scanner: scannerState() });
+
+        expect(toggle()).not.toBeChecked();
+        expect(screen.queryByRole("slider", { name: /seek/i })).toBeNull();
+        expect(mockGetCallPeaksQuery).not.toHaveBeenCalled();
+      });
+
+      it("shows each result's waveform once on, and is remembered", () => {
+        const { unmount } = renderPanel({ scanner: scannerState() });
+        fireEvent.click(toggle());
+        expect(screen.getByRole("slider", { name: /seek/i })).toBeInTheDocument();
+        unmount();
+
+        renderPanel({ scanner: scannerState() });
+
+        expect(toggle()).toBeChecked();
+        expect(screen.getByRole("slider", { name: /seek/i })).toBeInTheDocument();
+      });
+
+      it("counts the waveform in a row's estimated height", () => {
+        renderPanel({ scanner: scannerState() });
+        expect(virtualizer.estimateSize(0)).toBe(62);
+
+        fireEvent.click(toggle());
+
+        expect(virtualizer.estimateSize(0)).toBe(108);
+      });
+    });
+
     it("plays a call from its row", () => {
       renderPanel({ scanner: scannerState() });
       fireEvent.click(screen.getByRole("button", { name: "Play call" }));
@@ -670,6 +741,7 @@ describe("SearchPanel", () => {
     });
 
     it("starts a call that is not playing from the point chosen on its waveform", () => {
+      showWaveforms();
       mockGetCallPeaksQuery.mockReturnValue({
         data: { peaks: [0.5, 1, 0.25], duration: 10 },
       });
@@ -687,6 +759,7 @@ describe("SearchPanel", () => {
     });
 
     it("seeks within the call that is already playing", () => {
+      showWaveforms();
       mockGetCallPeaksQuery.mockReturnValue({
         data: { peaks: [0.5, 1, 0.25], duration: 10 },
       });
@@ -710,6 +783,7 @@ describe("SearchPanel", () => {
       // ends. The row stayed "playing", took the click as a seek, and the
       // player — no longer holding the Call — ignored it, leaving the
       // waveform stuck at the end.
+      showWaveforms();
       mockGetCallPeaksQuery.mockReturnValue({
         data: { peaks: [0.5, 1, 0.25], duration: 10 },
       });
@@ -827,6 +901,63 @@ describe("SearchPanel", () => {
         );
       });
 
+      it("offers Stop only while a result plays or is paused", () => {
+        const stop = () => screen.getByRole("button", { name: "Stop" });
+        const { unmount } = renderPanel({ scanner: scannerState() });
+        expect(stop()).toBeDisabled();
+        unmount();
+
+        const paused = renderPanel({
+          scanner: scannerState({
+            currentCall: playing,
+            isAudioActive: true,
+            isPaused: true,
+          }),
+        });
+        expect(stop()).toBeEnabled();
+        paused.unmount();
+
+        // A live call is the scanner's to stop, not search's.
+        renderPanel(
+          { scanner: scannerState({ currentCall: playing, isAudioActive: true }) },
+          true,
+          vi.fn(),
+          { playingLive: true },
+        );
+        expect(stop()).toBeDisabled();
+      });
+
+      it("stops a result and forgets the place", () => {
+        const { store } = renderPanel({
+          scanner: scannerState({
+            currentCall: playing,
+            isAudioActive: true,
+            isPaused: true,
+          }),
+        });
+
+        fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+
+        expect(player.stop).toHaveBeenCalled();
+        expect(store.getState().scanner.isPaused).toBe(false);
+        // The player ends the call, with no live calls waiting. The display
+        // still shows it, but neither the skips nor Play go on from it.
+        act(() => {
+          store.dispatch(setAudioActive(false));
+        });
+        expect(
+          screen.getByRole("button", { name: "Previous call" }),
+        ).toBeDisabled();
+        expect(screen.getByRole("button", { name: "Next call" })).toBeDisabled();
+
+        fireEvent.click(screen.getByRole("button", { name: "Play" }));
+
+        expect(player.playNow).toHaveBeenCalledWith(
+          expect.objectContaining({ id: 8 }),
+          expect.anything(),
+        );
+      });
+
       it("skips forward in time, up the list for Newest first", () => {
         renderPanel({
           scanner: scannerState({ currentCall: playing, isAudioActive: true }),
@@ -894,6 +1025,7 @@ describe("SearchPanel", () => {
         });
 
         it("skips with the arrows after a waveform click, not seeks", () => {
+          showWaveforms();
           mockGetCallPeaksQuery.mockReturnValue({
             data: { peaks: [0.5, 1, 0.25], duration: 10 },
           });

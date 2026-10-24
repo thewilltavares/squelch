@@ -203,10 +203,12 @@ Each result offers **play**, **download**, and — when signed in — a star to
 bookmark it and a share mark. Results are paged; use **Prev** and **Next** at the
 top.
 
-Under each result is its waveform. Select a point on it, or drag along it, to
-hear the call from there; on a call that is not playing, that starts it. The
-call playing is marked, its waveform fills in as it plays, and its play button
-pauses and resumes it.
+Turn on **Waveform**, beside the call count, to show each result's waveform.
+Select a point on it, or drag along it, to hear the call from there; on a call
+that is not playing, that starts it. The call playing is marked, its waveform
+fills in as it plays, and its play button pauses and resumes it. Waveforms are
+off to begin with, since each one downloads its call's audio, and search
+remembers the setting.
 
 **Autoplay**, beside the call count, keeps going when a call ends: the next call
 *forward in time* plays, moving onto the next page when it gets there. With
@@ -214,6 +216,12 @@ pauses and resumes it.
 hear an incident from the top down. It stops at the newest matching call, when
 you change the filters or the page yourself, or when you close search. While it
 runs, live calls wait their turn and play once it stops.
+
+When you have caught up, select **Stop** (the square, beside play) rather than
+pause. It ends the call and autoplay goes no further, while the live calls that
+waited play straight away. Search goes to its newest page, where those live
+calls are. Autoplay stays switched on for the next call you play, and **Play**
+starts again from the top of the list.
 
 ---
 
