@@ -39,6 +39,7 @@ const player = vi.hoisted(() => ({
   pause: vi.fn(),
   resume: vi.fn(),
   seek: vi.fn(),
+  stop: vi.fn(),
 }));
 
 vi.mock("@/shared/services/audio/player", () => ({ audioPlayer: player }));
@@ -400,6 +401,31 @@ describe("SearchPanel", () => {
         "title",
         expect.stringMatching(/each new call would shift/i),
       );
+    });
+
+    it("fetches page 1 again on return when calls arrived while it waited", () => {
+      // Regression: page 1 came back from the cache without the calls that
+      // arrived meanwhile, so a live call playing from them was in no row.
+      mockSearchCallsQuery.mockReturnValue({
+        data: { calls: [], total: 50 },
+        currentData: { calls: [], total: 50 },
+        isFetching: false,
+        refetch,
+        fulfilledTimeStamp: 1,
+      });
+      const { store } = renderPanel({ scanner: scannerState() });
+      fireEvent.click(toggle());
+      expect(refetch).not.toHaveBeenCalled(); // nothing missed yet
+      fireEvent.click(screen.getByText("Next"));
+      act(() => {
+        store.dispatch(callReceived(arrived));
+        vi.runAllTimers();
+      });
+      expect(refetch).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByText("Prev"));
+
+      expect(refetch).toHaveBeenCalledTimes(1);
     });
 
     it("refreshes any page of Oldest first, which new calls only add to", () => {
@@ -790,6 +816,63 @@ describe("SearchPanel", () => {
 
         expect(player.playNow).toHaveBeenCalledWith(
           expect.objectContaining({ id: 7 }),
+          expect.anything(),
+        );
+      });
+
+      it("offers Stop only while a result plays or is paused", () => {
+        const stop = () => screen.getByRole("button", { name: "Stop" });
+        const { unmount } = renderPanel({ scanner: scannerState() });
+        expect(stop()).toBeDisabled();
+        unmount();
+
+        const paused = renderPanel({
+          scanner: scannerState({
+            currentCall: playing,
+            isAudioActive: true,
+            isPaused: true,
+          }),
+        });
+        expect(stop()).toBeEnabled();
+        paused.unmount();
+
+        // A live call is the scanner's to stop, not search's.
+        renderPanel(
+          { scanner: scannerState({ currentCall: playing, isAudioActive: true }) },
+          true,
+          vi.fn(),
+          { playingLive: true },
+        );
+        expect(stop()).toBeDisabled();
+      });
+
+      it("stops a result and forgets the place", () => {
+        const { store } = renderPanel({
+          scanner: scannerState({
+            currentCall: playing,
+            isAudioActive: true,
+            isPaused: true,
+          }),
+        });
+
+        fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+
+        expect(player.stop).toHaveBeenCalled();
+        expect(store.getState().scanner.isPaused).toBe(false);
+        // The player ends the call, with no live calls waiting. The display
+        // still shows it, but neither the skips nor Play go on from it.
+        act(() => {
+          store.dispatch(setAudioActive(false));
+        });
+        expect(
+          screen.getByRole("button", { name: "Previous call" }),
+        ).toBeDisabled();
+        expect(screen.getByRole("button", { name: "Next call" })).toBeDisabled();
+
+        fireEvent.click(screen.getByRole("button", { name: "Play" }));
+
+        expect(player.playNow).toHaveBeenCalledWith(
+          expect.objectContaining({ id: 8 }),
           expect.anything(),
         );
       });

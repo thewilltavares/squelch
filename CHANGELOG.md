@@ -24,10 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or page change, when search closes, or after three calls in a row cannot be
   played. Live calls wait in the queue while it runs, as they already do
   behind a call played from search.
-- **Playback controls in search.** Back, play/pause and forward sit above
-  the results. Back and forward step one call through time, as autoplay
+- **Playback controls in search.** Back, play/pause, stop and forward sit
+  above the results. Back and forward step one call through time, as autoplay
   does, across pages, with autoplay on or off. Space plays and pauses and
   the arrow keys skip, anywhere in the panel but text fields and dropdowns.
+  Stop is for when you have caught up: it ends the call, playing or paused,
+  without autoplay going on, plays the live calls that waited behind it, and
+  forgets the place. The list moves to its newest page, fetched fresh, where
+  those live calls are, and Play starts again from the top of the list.
 - **Search shows when live audio is playing.** A live call is in no row, so
   it seemed to play from nowhere. A red label beside the controls now names
   its talkgroup while one plays (or the live stream, in background mode),
@@ -35,7 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Auto-refresh in search.** A toggle beside Autoplay fetches the results
   again as new calls are recorded. Rows being read stay where they are as
   new ones arrive above them. Past page 1 of Newest first it waits, since
-  each new call there would shift every row.
+  each new call there would shift every row. A page that comes back into
+  view after calls arrived without it, from another page or with search
+  closed, is fetched again.
 - **Waveforms in search are a switch, off to begin with.** A Waveform toggle
   beside Auto-refresh shows them. Each one downloads and decodes its call's
   audio, so with it off a page of results costs no audio until a call plays.

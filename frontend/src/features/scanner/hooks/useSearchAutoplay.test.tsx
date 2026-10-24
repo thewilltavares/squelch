@@ -4,7 +4,7 @@ import { renderHook, act, waitFor } from "@testing-library/react";
 import { configureStore } from "@reduxjs/toolkit";
 import { Provider } from "react-redux";
 import { api } from "@/app/api";
-import { scannerSlice, setPaused } from "../scannerSlice";
+import { scannerSlice, setCurrentCall, setPaused } from "../scannerSlice";
 import { authSlice } from "@/features/auth";
 import {
   callsApi,
@@ -13,9 +13,13 @@ import {
   type CallSearchResponse,
   type CallSearchResult,
 } from "../callsSlice";
-import { useSearchAutoplay } from "./useSearchAutoplay";
+import { toPlayableCall, useSearchAutoplay } from "./useSearchAutoplay";
 
-const player = vi.hoisted(() => ({ playNow: vi.fn(), resume: vi.fn() }));
+const player = vi.hoisted(() => ({
+  playNow: vi.fn(),
+  resume: vi.fn(),
+  stop: vi.fn(),
+}));
 vi.mock("@/shared/services/audio/player", () => ({ audioPlayer: player }));
 
 type OnEnded = (failed: boolean) => void;
@@ -472,6 +476,73 @@ describe("useSearchAutoplay", () => {
     endLatest();
 
     expect(hook.current.lastPlayed).toBe(2);
+  });
+
+  it("stops for good: forgets the place and clears a pause, autoplay still on", () => {
+    const { result: hook } = setup(store, {
+      isOpen: true,
+      calls: page([1, 2], 2).calls,
+      queryParams: params("asc", 1),
+    });
+    act(() => hook.current.setEnabled(true));
+    act(() => hook.current.play(result(1)));
+    // What the player reports as it starts the Call, then a pause.
+    act(() => {
+      store.dispatch(setCurrentCall(toPlayableCall(result(1))));
+      store.dispatch(setPaused(true));
+    });
+
+    act(() => hook.current.stop());
+
+    expect(player.stop).toHaveBeenCalled();
+    expect(hook.current.lastPlayed).toBeUndefined();
+    expect(hook.current.stopped).toBe(1);
+    expect(hook.current.enabled).toBe(true);
+    expect(store.getState().scanner.isPaused).toBe(false);
+  });
+
+  it("stops onto page 1 for Newest first, fetched again", async () => {
+    // Page 1 was cached before the catch-up; the live calls playing now
+    // (5 and 6) arrived since.
+    await seed(store, params("desc", 1), page([4, 3], 4));
+    serve({ 1: page([6, 5], 6) });
+    const { result: hook } = setup(store, {
+      isOpen: true,
+      calls: page([2, 1], 4).calls,
+      queryParams: params("desc", 2),
+    });
+    act(() => hook.current.play(result(2)));
+
+    act(() => hook.current.stop());
+
+    expect(store.getState().calls.page).toBe(1);
+    await waitFor(() =>
+      expect(
+        callsApi.endpoints.searchCalls
+          .select(params("desc", 1))(store.getState())
+          .data?.calls.map((c) => c.id),
+      ).toEqual([6, 5]),
+    );
+  });
+
+  it("stops onto the last page for Oldest first, as it is now", async () => {
+    // Three pages by now, though the list on screen came from when there
+    // were two.
+    serve({ 1: page([1, 2], 6), 3: page([5, 6], 6) });
+    const { result: hook } = setup(store, {
+      isOpen: true,
+      calls: page([1, 2], 4).calls,
+      queryParams: params("asc", 1),
+    });
+    act(() => hook.current.play(result(1)));
+
+    act(() => hook.current.stop());
+
+    await waitFor(() => expect(store.getState().calls.page).toBe(3));
+    expect(
+      callsApi.endpoints.searchCalls.select(params("asc", 3))(store.getState())
+        .data,
+    ).toBeDefined();
   });
 
   it("remembers the switch in this browser", () => {

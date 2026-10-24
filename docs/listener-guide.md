@@ -217,6 +217,12 @@ hear an incident from the top down. It stops at the newest matching call, when
 you change the filters or the page yourself, or when you close search. While it
 runs, live calls wait their turn and play once it stops.
 
+When you have caught up, select **Stop** (the square, beside play) rather than
+pause. It ends the call and autoplay goes no further, while the live calls that
+waited play straight away. Search goes to its newest page, where those live
+calls are. Autoplay stays switched on for the next call you play, and **Play**
+starts again from the top of the list.
+
 ---
 
 ## Bookmarks

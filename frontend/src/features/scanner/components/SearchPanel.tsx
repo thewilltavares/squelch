@@ -23,6 +23,7 @@ import {
   SkipBack,
   SkipForward,
   SlidersHorizontal,
+  Square,
 } from "lucide-react";
 import { useAppSelector, useAppDispatch } from "@/app/store";
 import { ShareCallButton } from "../components/ShareCallButton";
@@ -532,10 +533,8 @@ export default function SearchPanel({
     return params;
   }, [filters]);
 
-  const { data, currentData, isFetching, refetch } = useSearchCallsQuery(
-    queryParams,
-    { skip: !isOpen },
-  );
+  const { data, currentData, isFetching, refetch, fulfilledTimeStamp } =
+    useSearchCallsQuery(queryParams, { skip: !isOpen });
   // The overlay is for a list still to come: new filters or a page not yet
   // loaded. A refresh of the list on screen (auto-refresh, autoplay warming
   // a page crossing, the Refresh button) keeps it in view and quiet.
@@ -623,8 +622,10 @@ export default function SearchPanel({
   // Newest first, down it for Oldest first, across pages either way.
   // They skip from the last result played here, playing or not, so they
   // still work after it ends with autoplay off, or while a live Call that
-  // queued behind it plays. Otherwise from the last Call heard at all.
-  const anchorId = autoplay.lastPlayed ?? lastCallId;
+  // queued behind it plays. Otherwise from the last Call heard at all,
+  // unless Stop ended it: Stop forgets the place.
+  const heardId = lastCallId === autoplay.stopped ? undefined : lastCallId;
+  const anchorId = autoplay.lastPlayed ?? heardId;
   const lastIndex = calls.findIndex((c) => c.id === anchorId);
   const listStep = filters.sort === "asc" ? 1 : -1;
   const canSkip = (dir: 1 | -1) => {
@@ -652,6 +653,13 @@ export default function SearchPanel({
     followCurrent.current = true;
   };
   const transportPlaying = currentCallId != null && !isPaused;
+  // Stop ends a result, playing or paused, and hands over to the live
+  // Calls waiting behind it. A live Call is the scanner's to stop.
+  const canStop = currentCallId != null && !playingLive;
+  const handleStop = () => {
+    followCurrent.current = false;
+    autoplay.stop();
+  };
 
   // A live Call is in no row, so without a word here it plays from
   // nowhere: one that queued behind a search Call, or the server stream
@@ -749,6 +757,28 @@ export default function SearchPanel({
       clearTimeout(timer);
     };
   }, [dispatch, isOpen, autoRefresh, refreshable, refetch]);
+
+  // A page cached from earlier comes back into view without the Calls that
+  // arrived while it was away: while a page past 1 of Newest first waited,
+  // or with search closed. Fetch it again if any did. The arrivals are
+  // noted whenever auto-refresh is on, whatever is on screen.
+  const lastArrival = useRef(0);
+  useEffect(() => {
+    if (!autoRefresh) return;
+    return dispatch(
+      addListener({
+        actionCreator: callReceived,
+        effect: () => {
+          lastArrival.current = Date.now();
+        },
+      }),
+    );
+  }, [dispatch, autoRefresh]);
+  useEffect(() => {
+    if (!isOpen || !autoRefresh || !refreshable) return;
+    if (fulfilledTimeStamp == null) return;
+    if (fulfilledTimeStamp < lastArrival.current) void refetch();
+  }, [isOpen, autoRefresh, refreshable, fulfilledTimeStamp, refetch]);
 
   // Rows that arrive above the ones being read push them down. Unless the
   // list is at the top, where new rows are the point, scroll by as much so
@@ -1162,6 +1192,15 @@ export default function SearchPanel({
                   title={`${transportPlaying ? "Pause" : "Play"} (Space)`}
                 >
                   {transportPlaying ? <Pause size={16} /> : <Play size={16} />}
+                </button>
+                <button
+                  className="btn btn-ghost btn-sm btn-circle"
+                  disabled={!canStop}
+                  onClick={handleStop}
+                  aria-label="Stop"
+                  title="Stop, and go on to the live calls waiting"
+                >
+                  <Square size={14} />
                 </button>
                 <button
                   className="btn btn-ghost btn-sm btn-circle"
